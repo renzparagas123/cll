@@ -7,11 +7,13 @@
   </head>
   <body>
     <script>
-      // Keep query parameters (?code=XXX)
-      const params = window.location.search + window.location.hash;
-
-      // Redirect back to your React app hosted in /cll/
-      window.location.href = "/cll/" + params;
+      // Only redirect IF the URL contains ?code=
+      if (window.location.search.includes("code=")) {
+        const params = window.location.search + window.location.hash;
+        window.location.href = "/cll/" + params;
+      } else {
+        document.body.innerHTML = "<h2>No authorization code found.</h2>";
+      }
     </script>
   </body>
 </html>
