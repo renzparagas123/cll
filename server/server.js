@@ -63,8 +63,8 @@ app.get('/api/test', (req, res) => {
 app.get('/api/lazada/auth-url', (req, res) => {
     try {
         const redirectUri = process.env.NODE_ENV === 'production'
-            ? 'https://renzparagas123.github.io/cll/callback'  // ✅ This is perfect
-            : 'http://localhost:5173/callback';
+            ? 'https://renzparagas123.github.io/cll/#/callback'  // ✅ Added #/
+            : 'http://localhost:5173/#/callback';  // ✅ Added #/ for local too
 
         const authUrl = `https://auth.lazada.com/oauth/authorize?response_type=code&force_auth=true&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${process.env.LAZADA_APP_KEY}`;
 
