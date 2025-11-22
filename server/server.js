@@ -204,6 +204,36 @@ app.get('/api/lazada/seller', verifyToken, async (req, res) => {
     }
 });
 
+// Get seller policy information
+app.get('/api/lazada/seller/policy', verifyToken, async (req, res) => {
+    try {
+        console.log('Fetching seller policy...');
+        const policyData = await lazadaAuth.makeRequest(
+            '/seller/policy/fetch',
+            req.accessToken
+        );
+
+        // Check if response contains error
+        if (policyData.code !== '0' && policyData.code !== 0) {
+            console.error('Seller policy fetch failed:', policyData);
+            return res.status(400).json({
+                error: 'Failed to get seller policy',
+                details: policyData.message || 'Unknown error',
+                lazada_code: policyData.code
+            });
+        }
+
+        console.log('Seller policy fetched successfully');
+        res.json(policyData);
+    } catch (error) {
+        console.error('Seller policy error:', error);
+        res.status(500).json({
+            error: 'Failed to get seller policy',
+            details: error.response?.data || error.message
+        });
+    }
+});
+
 // Get products
 app.get('/api/lazada/products', verifyToken, async (req, res) => {
     try {
@@ -360,33 +390,7 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
     }
 });
 
-// Get Seller Performance Metrics (FFR)
-app.get('/api/lazada/seller/performance', verifyToken, async (req, res) => {
-  try {
-    console.log('Fetching seller performance metrics...');
-    
-    const performanceData = await lazadaAuth.makeRequest(
-      '/seller/policy/fetch',
-      req.accessToken
-    );
-    
-    if (performanceData.code === '0' || performanceData.code === 0) {
-      res.json(performanceData);
-    } else {
-      res.status(400).json({
-        error: 'Failed to fetch performance data',
-        details: performanceData.message,
-        lazada_code: performanceData.code
-      });
-    }
-  } catch (error) {
-    console.error('Performance metrics error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get performance metrics',
-      details: error.response?.data || error.message 
-    });
-  }
-});
+
 
 // ============================================
 // ERROR HANDLING
@@ -430,6 +434,7 @@ app.listen(PORT, () => {
     console.log('  POST /api/lazada/refresh-token');
     console.log('\n📦 Lazada API (require auth token):');
     console.log('  GET  /api/lazada/seller');
+    console.log('  GET  /api/lazada/seller/policy');
     console.log('  GET  /api/lazada/products');
     console.log('  GET  /api/lazada/orders');
     console.log('  GET  /api/lazada/order/:orderId');
