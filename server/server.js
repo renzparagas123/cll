@@ -208,9 +208,14 @@ app.get('/api/lazada/seller', verifyToken, async (req, res) => {
 app.get('/api/lazada/seller/policy', verifyToken, async (req, res) => {
     try {
         console.log('Fetching seller policy...');
+        
+        // Get locale from query parameter or default to 'en_US'
+        const locale = req.query.locale || 'en_US';
+        
         const policyData = await lazadaAuth.makeRequest(
             '/seller/policy/fetch',
-            req.accessToken
+            req.accessToken,
+            { locale: locale }
         );
 
         // Check if response contains error
