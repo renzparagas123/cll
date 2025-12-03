@@ -399,29 +399,44 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req, res) => {
     try {
         const {
-            start_date,
-            end_date,
-            report_type,
+            lastStartDate,  // REQUIRED parameter
+            lastEndDate,    // REQUIRED parameter
             dimensions,
             metrics,
-            page = 1,
-            page_size = 20
+            currencyType
         } = req.query;
 
-        console.log('Fetching report overview...');
+        console.log('Fetching report overview with params:', req.query);
 
-        // Build query parameters
+        // Validate required parameters
+        if (!lastStartDate) {
+            return res.status(400).json({
+                error: 'Missing required parameter',
+                details: 'lastStartDate is required (format: YYYY-MM-DD)',
+                lazada_code: 'MissingParameter'
+            });
+        }
+
+        if (!lastEndDate) {
+            return res.status(400).json({
+                error: 'Missing required parameter',
+                details: 'lastEndDate is required (format: YYYY-MM-DD)',
+                lazada_code: 'MissingParameter'
+            });
+        }
+
+        // Build query parameters with EXACT naming as Lazada expects
         const params = {
-            page: parseInt(page),
-            page_size: parseInt(page_size)
+            lastStartDate: lastStartDate,
+            lastEndDate: lastEndDate
         };
 
         // Add optional parameters if provided
-        if (start_date) params.start_date = start_date;
-        if (end_date) params.end_date = end_date;
-        if (report_type) params.report_type = report_type;
         if (dimensions) params.dimensions = dimensions;
         if (metrics) params.metrics = metrics;
+        if (currencyType) params.currencyType = currencyType;
+
+        console.log('Making request with params:', params);
 
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getReportOverview',
@@ -440,90 +455,11 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
         }
 
         console.log('Report overview fetched successfully');
-        
-        // Transform the response to include account information
-        const transformedData = {
-            ...reportData,
-            // Add account metadata if available from token
-            account_info: {
-                account: req.account || 'N/A',
-                country: req.country || 'N/A'
-            },
-            // Add pagination info
-            pagination: {
-                current_page: parseInt(page),
-                page_size: parseInt(page_size),
-                total_count: reportData.data?.total_count || 0
-            }
-        };
-
-        res.json(transformedData);
+        res.json(reportData);
     } catch (error) {
         console.error('Report overview error:', error);
         res.status(500).json({
             error: 'Failed to get report overview',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get Report Detail by Report ID
-app.get('/api/lazada/sponsor/solutions/report/:reportId', verifyToken, async (req, res) => {
-    try {
-        const { reportId } = req.params;
-
-        console.log(`Fetching report details for ID: ${reportId}`);
-
-        const reportData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/report/getReportDetail',
-            req.accessToken,
-            { report_id: reportId }
-        );
-
-        if (reportData.code !== '0' && reportData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to get report detail',
-                details: reportData.message,
-                lazada_code: reportData.code
-            });
-        }
-
-        res.json(reportData);
-    } catch (error) {
-        console.error('Report detail error:', error);
-        res.status(500).json({
-            error: 'Failed to get report detail',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Download Report (if available)
-app.get('/api/lazada/sponsor/solutions/report/:reportId/download', verifyToken, async (req, res) => {
-    try {
-        const { reportId } = req.params;
-
-        console.log(`Downloading report: ${reportId}`);
-
-        const reportData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/report/downloadReport',
-            req.accessToken,
-            { report_id: reportId }
-        );
-
-        if (reportData.code !== '0' && reportData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to download report',
-                details: reportData.message,
-                lazada_code: reportData.code
-            });
-        }
-
-        res.json(reportData);
-    } catch (error) {
-        console.error('Report download error:', error);
-        res.status(500).json({
-            error: 'Failed to download report',
             details: error.response?.data || error.message
         });
     }
@@ -578,8 +514,6 @@ app.listen(PORT, () => {
     console.log('  GET  /api/lazada/order/:orderId/items');
     console.log('  POST /api/lazada/orders/items');
     console.log('\n📊 Sponsor Solutions - Reports:');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/overview');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/:reportId');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/:reportId/download');
+    console.log('  GET  /api/lazada/sponsor/solutions/report/overview (requires lastStartDate & lastEndDate)');
     console.log('='.repeat(60));
 });
