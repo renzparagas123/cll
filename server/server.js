@@ -399,17 +399,19 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req, res) => {
     try {
         const {
-            startDate,      // Changed from lastStartDate
-            endDate,        // Changed from lastEndDate
+            startDate,
+            endDate,
             dimensions,
             metrics,
             currencyType
         } = req.query;
 
-        console.log('Fetching report overview with params:', req.query);
+        console.log('=== REPORT OVERVIEW REQUEST DEBUG ===');
+        console.log('1. Raw query params received:', req.query);
 
         // Validate required parameters
         if (!startDate) {
+            console.log('❌ startDate is missing!');
             return res.status(400).json({
                 error: 'Missing required parameter',
                 details: 'startDate is required (format: YYYY-MM-DD)',
@@ -418,6 +420,7 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
         }
 
         if (!endDate) {
+            console.log('❌ endDate is missing!');
             return res.status(400).json({
                 error: 'Missing required parameter',
                 details: 'endDate is required (format: YYYY-MM-DD)',
@@ -425,18 +428,30 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
             });
         }
 
-        // Build query parameters with correct naming
+        console.log('✅ startDate:', startDate);
+        console.log('✅ endDate:', endDate);
+
+        // Build query parameters
         const params = {
-            startDate: startDate,    // Correct parameter name
-            endDate: endDate          // Correct parameter name
+            startDate: startDate,
+            endDate: endDate
         };
 
         // Add optional parameters if provided
-        if (dimensions) params.dimensions = dimensions;
-        if (metrics) params.metrics = metrics;
-        if (currencyType) params.currencyType = currencyType;
+        if (dimensions) {
+            params.dimensions = dimensions;
+            console.log('📊 dimensions:', dimensions);
+        }
+        if (metrics) {
+            params.metrics = metrics;
+            console.log('📈 metrics:', metrics);
+        }
+        if (currencyType) {
+            params.currencyType = currencyType;
+            console.log('💰 currencyType:', currencyType);
+        }
 
-        console.log('Making request with params:', params);
+        console.log('2. Parameters to send to Lazada:', JSON.stringify(params, null, 2));
 
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getReportOverview',
@@ -444,23 +459,32 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
             params
         );
 
+        console.log('3. Lazada response received:', JSON.stringify(reportData, null, 2));
+
         // Check if response contains error
         if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('Report overview fetch failed:', reportData);
+            console.error('❌ Report overview fetch failed:', reportData);
             return res.status(400).json({
                 error: 'Failed to get report overview',
                 details: reportData.message || 'Unknown error',
-                lazada_code: reportData.code
+                lazada_code: reportData.code,
+                full_response: reportData
             });
         }
 
-        console.log('Report overview fetched successfully');
+        console.log('✅ Report overview fetched successfully');
         res.json(reportData);
     } catch (error) {
-        console.error('Report overview error:', error);
+        console.error('❌ Report overview error:', error);
+        console.error('Error details:', {
+            message: error.message,
+            response: error.response?.data,
+            status: error.response?.status
+        });
         res.status(500).json({
             error: 'Failed to get report overview',
-            details: error.response?.data || error.message
+            details: error.response?.data || error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 });
