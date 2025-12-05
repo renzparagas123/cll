@@ -393,10 +393,6 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 
 
 
-// ============================================
-// SPONSOR SOLUTIONS - REPORT ENDPOINTS (FIXED - GET METHOD)
-// ============================================
-
 // Get Report Overview - Using GET with all params in query string
 // ============================================
 // SPONSOR SOLUTIONS - REPORT ENDPOINTS (FIXED - GET METHOD)
@@ -426,10 +422,10 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
             });
         }
 
-        // Map to Lazada's expected parameter names
+        // Map to Lazada's expected parameter names (without "last" prefix)
         const params = {
-            lastStartDate: startDate.trim(),
-            lastEndDate: endDate.trim()
+            startDate: startDate.trim(),
+            endDate: endDate.trim()
         };
 
         // Add optional parameters
@@ -437,9 +433,9 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
         if (metrics) params.metrics = metrics;
         if (currencyType) params.currencyType = currencyType;
 
-        console.log('✅ Params mapped for Lazada API:');
-        console.log('   startDate →', params.lastStartDate);
-        console.log('   endDate →', params.lastEndDate);
+        console.log('✅ Params for Lazada API:');
+        console.log('   startDate:', params.startDate);
+        console.log('   endDate:', params.endDate);
         if (dimensions) console.log('   dimensions:', dimensions);
         if (metrics) console.log('   metrics:', metrics);
         if (currencyType) console.log('   currencyType:', currencyType);
