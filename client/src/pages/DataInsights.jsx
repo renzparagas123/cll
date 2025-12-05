@@ -111,8 +111,9 @@ export default function DataInsights({ apiUrl }) {
         endDate: dateRange.endDate
       });
 
+      // FIXED: Updated API path to match backend endpoint
       const response = await fetch(
-        `${apiUrl}/lazada/sponsor/solutions/report/overview?${params}`,
+        `${apiUrl}/lazada/sponsor/solutions/report/getReportOverview?${params}`,
         {
           method: 'GET',
           headers: {
@@ -123,6 +124,13 @@ export default function DataInsights({ apiUrl }) {
       );
 
       const data = await response.json();
+
+      console.log(`Response for ${account.account}:`, {
+        status: response.status,
+        code: data.code,
+        message: data.message,
+        hasData: !!data.data
+      });
 
       if (response.ok && (data.code === '0' || data.code === 0)) {
         // Parse metrics from the response
@@ -158,6 +166,7 @@ export default function DataInsights({ apiUrl }) {
           }
         };
       } else {
+        console.error(`API Error for ${account.account}:`, data);
         return { 
           parsed: null,
           timeline: [],
@@ -167,7 +176,8 @@ export default function DataInsights({ apiUrl }) {
             status: response.status,
             statusText: response.statusText,
             headers: {},
-            fullResponse: data
+            fullResponse: data,
+            error: data.message || data.error || 'Unknown error'
           }
         };
       }
@@ -260,7 +270,7 @@ export default function DataInsights({ apiUrl }) {
     const changeColor = title === 'ROI' ? (isPositive ? 'text-red-600' : 'text-green-600') : (isPositive ? 'text-green-600' : 'text-red-600');
     
     return (
-      <div className="bg-white p-6 rounded-lg">
+      <div className="bg-white p-6 rounded-lg shadow-sm">
         <div className="mb-4">
           <div className={`text-sm font-medium ${color}`}>{title}</div>
           <div className="text-3xl font-bold mt-2">
@@ -269,7 +279,7 @@ export default function DataInsights({ apiUrl }) {
           </div>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-gray-500">vs Previous Day</span>
+          <span className="text-gray-500">vs Previous Period</span>
           <div className="flex items-center gap-1">
             {isPositive ? <TrendingUp size={16} className={changeColor} /> : <TrendingDown size={16} className={changeColor} />}
             <span className={changeColor}>
@@ -319,17 +329,23 @@ export default function DataInsights({ apiUrl }) {
               type="date"
               value={dateRange.startDate}
               onChange={(e) => handleDateChange('startDate', e.target.value)}
+              max={dateRange.endDate}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-            <span className="text-gray-500">-</span>
+            <span className="text-gray-500">to</span>
             <input
               type="date"
               value={dateRange.endDate}
               onChange={(e) => handleDateChange('endDate', e.target.value)}
+              min={dateRange.startDate}
+              max={new Date().toISOString().split('T')[0]}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-          <button className="ml-auto flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-sm">
+          <div className="ml-auto text-sm text-gray-600">
+            {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
+          </div>
+          <button className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-sm">
             <Download size={16} />
             Download
           </button>
@@ -355,6 +371,11 @@ export default function DataInsights({ apiUrl }) {
                 <p className="text-sm text-gray-400 mt-1">
                   HTTP Status: {data.status} {data.statusText}
                 </p>
+                {data.error && (
+                  <p className="text-sm text-red-400 mt-1">
+                    Error: {data.error}
+                  </p>
+                )}
               </div>
               <div className="bg-black p-4 rounded">
                 <pre className="text-xs overflow-auto">
@@ -371,8 +392,22 @@ export default function DataInsights({ apiUrl }) {
         <div className="flex items-center justify-center h-96 bg-white rounded-lg shadow">
           <div className="flex flex-col items-center gap-3">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-            <p className="text-gray-600">Loading report data...</p>
+            <p className="text-gray-600">Loading report data from {accounts.length} account{accounts.length !== 1 ? 's' : ''}...</p>
           </div>
+        </div>
+      ) : metricsData.length === 0 && !loading ? (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-6 py-8 rounded-lg text-center">
+          <p className="text-lg font-semibold mb-2">No Data Available</p>
+          <p className="text-sm">
+            No report data could be retrieved for the selected date range. 
+            Please check if your accounts have Sponsor Solutions enabled and try again.
+          </p>
+          <button
+            onClick={handleRefresh}
+            className="mt-4 bg-yellow-600 text-white px-6 py-2 rounded-lg hover:bg-yellow-700 transition-colors"
+          >
+            Retry
+          </button>
         </div>
       ) : (
         <>
@@ -392,19 +427,19 @@ export default function DataInsights({ apiUrl }) {
                 value={totals.totalRevenue} 
                 change={totals.avgRevenueChange}
                 isCurrency={true}
-                color="text-gray-900"
+                color="text-green-600"
               />
               <MetricCard 
                 title="Orders" 
                 value={totals.totalOrders} 
                 change={totals.avgOrdersChange}
-                color="text-gray-900"
+                color="text-purple-600"
               />
               <MetricCard 
                 title="Units Sold" 
                 value={totals.totalUnitsSold} 
                 change={totals.avgUnitsSoldChange}
-                color="text-gray-900"
+                color="text-orange-600"
               />
               <MetricCard 
                 title="ROI" 
@@ -417,7 +452,8 @@ export default function DataInsights({ apiUrl }) {
 
           {/* Chart Section */}
           {chartData.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow-sm">
+            <div className="bg-white p-6 rounded-lg shadow-sm mb-6">
+              <h2 className="text-xl font-bold mb-4">Performance Trend</h2>
               <ResponsiveContainer width="100%" height={400}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -449,6 +485,49 @@ export default function DataInsights({ apiUrl }) {
                   />
                 </LineChart>
               </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Account Breakdown Table */}
+          {metricsData.length > 0 && (
+            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200">
+                <h2 className="text-xl font-bold">Account Breakdown</h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Country</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Spend</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Revenue</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Orders</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">ROI</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {metricsData.map((metric) => (
+                      <tr key={metric.account_id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{metric.account_name}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{metric.account_country}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                          PHP {metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                          PHP {metric.revenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                          {metric.orders.toLocaleString('en-US')}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                          {metric.roi.toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </>

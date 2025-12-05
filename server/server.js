@@ -398,6 +398,11 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 // ============================================
 
 // Get Report Overview - Using GET with all params in query string
+// ============================================
+// SPONSOR SOLUTIONS - REPORT ENDPOINTS (FIXED - GET METHOD)
+// ============================================
+
+// Get Report Overview - Using GET with all params in query string
 app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, async (req, res) => {
     try {
         const {
