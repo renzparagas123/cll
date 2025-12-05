@@ -426,10 +426,10 @@ app.post('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (re
         console.log('   startDate:', startDate);
         console.log('   endDate:', endDate);
 
-        // Build params object
+        // Build params object - API requires lastStartDate and lastEndDate
         const params = {
-            startDate: startDate.trim(),
-            endDate: endDate.trim()
+            lastStartDate: startDate.trim(),
+            lastEndDate: endDate.trim()
         };
 
         // Add optional parameters
@@ -519,8 +519,8 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
         }
 
         const params = {
-            startDate: startDate.trim(),
-            endDate: endDate.trim()
+            lastStartDate: startDate.trim(),
+            lastEndDate: endDate.trim()
         };
 
         if (dimensions) params.dimensions = dimensions;
@@ -528,6 +528,8 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
         if (currencyType) params.currencyType = currencyType;
 
         console.log('📤 GET request - trying with query params');
+        console.log('   Mapped: startDate → lastStartDate');
+        console.log('   Mapped: endDate → lastEndDate');
         
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getReportOverview',
