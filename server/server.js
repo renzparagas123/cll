@@ -396,6 +396,7 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 // ============================================
 
 // Get Report Overview
+// Get Report Overview - FIXED VERSION
 app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req, res) => {
     try {
         const {
@@ -424,13 +425,13 @@ app.get('/api/lazada/sponsor/solutions/report/overview', verifyToken, async (req
         console.log('   startDate:', startDate);
         console.log('   endDate:', endDate);
 
-        // Build the exact params object that will be sent
+        // FIXED: Use the correct parameter names for Lazada API
         const params = {
-            startDate: startDate.trim(),
-            endDate: endDate.trim()
+            lastStartDate: startDate.trim(),  // Changed from startDate
+            lastEndDate: endDate.trim()        // Changed from endDate
         };
 
-        // Add optional parameters
+        // Add optional parameters with correct names
         if (dimensions) {
             params.dimensions = dimensions;
             console.log('   dimensions:', dimensions);
