@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Calendar, Download, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { Calendar, Download, RefreshCw, Info } from 'lucide-react';
 import { AccountManager } from '../utils/AccountManager';
 
 export default function DataInsights({ apiUrl }) {
@@ -14,7 +14,6 @@ export default function DataInsights({ apiUrl }) {
   const [showRawData, setShowRawData] = useState(false);
   const [rawResponses, setRawResponses] = useState({});
   
-  // Date range state - default to last 7 days
   const getDefaultDates = () => {
     const today = new Date();
     const sevenDaysAgo = new Date(today);
@@ -27,6 +26,7 @@ export default function DataInsights({ apiUrl }) {
   };
 
   const [dateRange, setDateRange] = useState(getDefaultDates());
+  const [selectedAccount, setSelectedAccount] = useState('all');
 
   useEffect(() => {
     const allAccounts = AccountManager.getAccounts();
@@ -37,6 +37,16 @@ export default function DataInsights({ apiUrl }) {
     }
     
     setAccounts(allAccounts);
+    
+    const arlaAccount = allAccounts.find(acc => 
+      acc.account?.toLowerCase().includes('arla') || 
+      acc.id?.toLowerCase().includes('arla')
+    );
+    
+    if (arlaAccount) {
+      setSelectedAccount(arlaAccount.id);
+    }
+    
     fetchAllAccountsReports(allAccounts);
   }, [navigate]);
 
@@ -62,7 +72,6 @@ export default function DataInsights({ apiUrl }) {
       
       const allMetrics = [];
       const allRawResponses = {};
-      const timelineDataByDate = {};
       
       results.forEach((result, index) => {
         if (result.status === 'fulfilled' && result.value) {
@@ -73,25 +82,9 @@ export default function DataInsights({ apiUrl }) {
               account_id: account.id,
               account_name: account.account,
               account_country: account.country,
+              timeline: result.value.timeline,
               ...result.value.parsed
             });
-
-            // Aggregate timeline data by date
-            if (result.value.timeline) {
-              result.value.timeline.forEach(item => {
-                if (!timelineDataByDate[item.date]) {
-                  timelineDataByDate[item.date] = { 
-                    date: item.date, 
-                    spend: 0, 
-                    roi: 0,
-                    count: 0 
-                  };
-                }
-                timelineDataByDate[item.date].spend += item.spend || 0;
-                timelineDataByDate[item.date].roi += item.roi || 0;
-                timelineDataByDate[item.date].count += 1;
-              });
-            }
           }
           
           if (result.value.rawResponse) {
@@ -100,16 +93,10 @@ export default function DataInsights({ apiUrl }) {
         }
       });
       
-      // Average ROI across accounts for each date
-      const chartTimeline = Object.values(timelineDataByDate).map(item => ({
-        date: item.date,
-        spend: item.spend,
-        roi: item.count > 0 ? item.roi / item.count : 0
-      })).sort((a, b) => new Date(a.date) - new Date(b.date));
-      
       setMetricsData(allMetrics);
-      setChartData(chartTimeline);
       setRawResponses(allRawResponses);
+      
+      updateChartData(allMetrics, selectedAccount);
     } catch (err) {
       setError('Failed to fetch report data');
       console.error(err);
@@ -118,6 +105,51 @@ export default function DataInsights({ apiUrl }) {
     }
   };
 
+  const updateChartData = (metrics, accountFilter) => {
+    const filteredMetrics = accountFilter === 'all' 
+      ? metrics 
+      : metrics.filter(m => m.account_id === accountFilter);
+
+    if (filteredMetrics.length === 0) {
+      setChartData([]);
+      return;
+    }
+
+    const timelineDataByDate = {};
+    
+    filteredMetrics.forEach(metric => {
+      if (metric.timeline) {
+        metric.timeline.forEach(item => {
+          if (!timelineDataByDate[item.date]) {
+            timelineDataByDate[item.date] = { 
+              date: item.date, 
+              spend: 0, 
+              roi: 0,
+              count: 0 
+            };
+          }
+          timelineDataByDate[item.date].spend += item.spend || 0;
+          timelineDataByDate[item.date].roi += item.roi || 0;
+          timelineDataByDate[item.date].count += 1;
+        });
+      }
+    });
+    
+    const chartTimeline = Object.values(timelineDataByDate).map(item => ({
+      date: item.date,
+      Spend: item.spend,
+      ROAS: item.count > 0 ? item.roi / item.count : 0
+    })).sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    setChartData(chartTimeline);
+  };
+
+  useEffect(() => {
+    if (metricsData.length > 0) {
+      updateChartData(metricsData, selectedAccount);
+    }
+  }, [selectedAccount]);
+
   const fetchAccountReports = async (account) => {
     try {
       const params = new URLSearchParams({
@@ -125,7 +157,6 @@ export default function DataInsights({ apiUrl }) {
         endDate: dateRange.endDate
       });
 
-      // FIXED: Updated API path to match backend endpoint
       const response = await fetch(
         `${apiUrl}/lazada/sponsor/solutions/report/getReportOverview?${params}`,
         {
@@ -139,19 +170,10 @@ export default function DataInsights({ apiUrl }) {
 
       const data = await response.json();
 
-      console.log(`Response for ${account.account}:`, {
-        status: response.status,
-        code: data.code,
-        message: data.message,
-        hasData: !!data.result
-      });
-
       if (response.ok && (data.code === '0' || data.code === 0)) {
-        // Parse metrics from Lazada API response structure
         const current = data.result?.reportOverviewDetailDTO || {};
         const previous = data.result?.lastReportOverviewDetailDTO || {};
 
-        // Calculate percentage changes
         const calculateChange = (current, previous) => {
           if (previous === 0) return 0;
           return ((current - previous) / previous) * 100;
@@ -174,26 +196,27 @@ export default function DataInsights({ apiUrl }) {
           roiChange: calculateChange(current.roi, previous.roi)
         };
 
-        // Create timeline data with both periods for better chart visualization
-        // Calculate daily values (approximate distribution across the period)
         const startDate = new Date(dateRange.startDate);
         const endDate = new Date(dateRange.endDate);
-        const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+        const midDate = new Date((startDate.getTime() + endDate.getTime()) / 2);
         
-        const timeline = [];
-        const dailySpend = metrics.spend / daysDiff;
-        const dailyROI = metrics.roi; // ROI stays constant for visualization
-        
-        for (let i = 0; i < daysDiff; i++) {
-          const date = new Date(startDate);
-          date.setDate(date.getDate() + i);
-          timeline.push({
-            date: date.toISOString().split('T')[0],
-            spend: dailySpend * (i + 1), // Cumulative
-            roi: dailyROI,
-            revenue: (dailySpend * (i + 1) * dailyROI) / 100
-          });
-        }
+        const timeline = [
+          {
+            date: startDate.toISOString().split('T')[0],
+            spend: previous.spend || 0,
+            roi: previous.roi || 0,
+          },
+          {
+            date: midDate.toISOString().split('T')[0],
+            spend: (previous.spend + current.spend) / 2 || 0,
+            roi: (previous.roi + current.roi) / 2 || 0,
+          },
+          {
+            date: endDate.toISOString().split('T')[0],
+            spend: current.spend || 0,
+            roi: current.roi || 0,
+          }
+        ];
         
         return { 
           parsed: metrics,
@@ -211,7 +234,6 @@ export default function DataInsights({ apiUrl }) {
           }
         };
       } else {
-        console.error(`API Error for ${account.account}:`, data);
         return { 
           parsed: null,
           timeline: [],
@@ -227,7 +249,6 @@ export default function DataInsights({ apiUrl }) {
         };
       }
     } catch (err) {
-      console.error(`Error fetching reports for ${account.account}:`, err);
       return { 
         parsed: null,
         timeline: [],
@@ -243,6 +264,95 @@ export default function DataInsights({ apiUrl }) {
     }
   };
 
+  const handleDownloadCSV = () => {
+    const filteredData = selectedAccount === 'all' 
+      ? metricsData 
+      : metricsData.filter(m => m.account_id === selectedAccount);
+
+    if (filteredData.length === 0) {
+      alert('No data available to download');
+      return;
+    }
+
+    // CSV Headers matching your expected format
+    const headers = [
+      'Date',
+      'Spend',
+      'Revenue',
+      'Orders',
+      'ROAS',
+      'Impressions',
+      'Clicks',
+      'Units Sold',
+      'Add To Cart',
+      'CVR',
+      'Direct Orders',
+      'Direct Quick Orders',
+      'Direct Unit Sold',
+      'Direct Add To Cart',
+      'CTR',
+      'CPC',
+      'Cost Per Order',
+      'Direct CVR',
+      'Cost per Direct Order',
+      'Direct Conversion'
+    ];
+
+    // Generate CSV rows
+    const rows = filteredData.map(metric => {
+      const cvr = metric.orders > 0 ? ((metric.orders / metric.clicks) * 100).toFixed(2) : '0.00';
+      const costPerOrder = metric.orders > 0 ? (metric.spend / metric.orders).toFixed(2) : '0.00';
+      const directCvr = '0.00'; // Default values for unavailable metrics
+      const costPerDirectOrder = '0.00';
+      const directConversion = '0.00';
+      
+      return [
+        dateRange.endDate, // Using end date as the report date
+        metric.spend.toFixed(2),
+        metric.revenue.toFixed(2),
+        metric.orders,
+        metric.roi.toFixed(2),
+        metric.impressions,
+        metric.clicks,
+        metric.unitsSold,
+        0, // Add To Cart - not available in current data
+        cvr + '%',
+        0, // Direct Orders - not available
+        0, // Direct Quick Orders - not available
+        0, // Direct Unit Sold - not available
+        0, // Direct Add To Cart - not available
+        (metric.ctr * 100).toFixed(2) + '%',
+        metric.cpc.toFixed(2),
+        costPerOrder,
+        directCvr + '%',
+        costPerDirectOrder,
+        directConversion
+      ];
+    });
+
+    // Combine headers and rows
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n');
+
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const fileName = selectedAccount === 'all' 
+      ? `all_accounts_report_${dateRange.startDate}_to_${dateRange.endDate}.csv`
+      : `${selectedAccount}_report_${dateRange.startDate}_to_${dateRange.endDate}.csv`;
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', fileName);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleRefresh = () => {
     fetchAllAccountsReports(accounts);
   };
@@ -254,9 +364,12 @@ export default function DataInsights({ apiUrl }) {
     }));
   };
 
-  // Calculate totals across all accounts
   const calculateTotals = () => {
-    if (metricsData.length === 0) {
+    const filteredData = selectedAccount === 'all' 
+      ? metricsData 
+      : metricsData.filter(m => m.account_id === selectedAccount);
+
+    if (filteredData.length === 0) {
       return {
         totalSpend: 0,
         totalRevenue: 0,
@@ -271,11 +384,15 @@ export default function DataInsights({ apiUrl }) {
         avgRevenueChange: 0,
         avgOrdersChange: 0,
         avgUnitsSoldChange: 0,
-        avgROIChange: 0
+        avgROIChange: 0,
+        avgClicksChange: 0,
+        avgImpressionsChange: 0,
+        avgCTRChange: 0,
+        avgCPCChange: 0
       };
     }
 
-    const totals = metricsData.reduce((acc, curr) => ({
+    const totals = filteredData.reduce((acc, curr) => ({
       totalSpend: acc.totalSpend + curr.spend,
       totalRevenue: acc.totalRevenue + curr.revenue,
       totalOrders: acc.totalOrders + curr.orders,
@@ -307,8 +424,7 @@ export default function DataInsights({ apiUrl }) {
       avgROIChange: 0
     });
 
-    // Calculate averages
-    const count = metricsData.length;
+    const count = filteredData.length;
     return {
       ...totals,
       avgROI: totals.avgROI / count,
@@ -324,343 +440,285 @@ export default function DataInsights({ apiUrl }) {
 
   const totals = calculateTotals();
 
-  const MetricCard = ({ title, value, change, isPercentage, isCurrency, color }) => {
+  const MetricBox = ({ label, value, change, color = 'blue', isCurrency = false }) => {
     const isPositive = change >= 0;
-    const changeColor = title === 'ROI' ? (isPositive ? 'text-red-600' : 'text-green-600') : (isPositive ? 'text-green-600' : 'text-red-600');
+    const changeColor = isPositive ? 'text-green-600' : 'text-red-600';
     
     return (
-      <div className="bg-white p-6 rounded-lg shadow-sm">
-        <div className="mb-4">
-          <div className={`text-sm font-medium ${color}`}>{title}</div>
-          <div className="text-3xl font-bold mt-2">
-            {isCurrency && 'PHP '}
-            {value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
+      <div className="flex flex-col border-r border-gray-200 last:border-r-0 px-6 py-2">
+        <div className="flex items-center gap-1 mb-1">
+          <span className={`text-xs font-medium text-${color}-600`}>{label}</span>
+          <Info size={12} className="text-gray-400" />
         </div>
-        <div className="flex items-center gap-2 text-sm">
+        <div className={`text-2xl font-bold text-${color}-600 mb-1`}>
+          {isCurrency && 'PHP '}
+          {value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+        <div className="flex items-center gap-2 text-xs">
           <span className="text-gray-500">vs Previous Period</span>
-          <div className="flex items-center gap-1">
-            {isPositive ? <TrendingUp size={16} className={changeColor} /> : <TrendingDown size={16} className={changeColor} />}
-            <span className={changeColor}>
-              {Math.abs(change).toFixed(2)}%{isPositive ? '▲' : '▼'}
-            </span>
-          </div>
+          <span className={`${changeColor} font-medium`}>
+            {isPositive ? '+' : ''}{change.toFixed(2)}%{isPositive ? '▲' : '▼'}
+          </span>
         </div>
       </div>
     );
   };
 
   return (
-    <div className="max-w-7xl mx-auto bg-gray-50 min-h-screen p-6">
+    <div className="max-w-7xl mx-auto bg-white min-h-screen">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Data Insights</h1>
-            <p className="text-sm text-gray-600 mt-1">
-              Sponsored Affiliate · SA Data insights
-            </p>
-          </div>
+      <div className="border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between mb-3">
+          <h1 className="text-xl font-semibold text-gray-900">Overview</h1>
           
-          <div className="flex gap-3">
-            <button
-              onClick={() => setShowRawData(!showRawData)}
-              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm"
-            >
-              {showRawData ? 'Hide' : 'Show'} Raw Data
-            </button>
+          <div className="flex gap-3 items-center">
+            {/* Date Range */}
+            <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded">
+              <Calendar size={16} className="text-gray-500" />
+              <input
+                type="date"
+                value={dateRange.startDate}
+                onChange={(e) => handleDateChange('startDate', e.target.value)}
+                className="text-sm border-none focus:ring-0 p-0"
+              />
+              <span className="text-gray-500">-</span>
+              <input
+                type="date"
+                value={dateRange.endDate}
+                onChange={(e) => handleDateChange('endDate', e.target.value)}
+                className="text-sm border-none focus:ring-0 p-0"
+              />
+            </div>
+
             <button
               onClick={handleRefresh}
               disabled={loading}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2 text-sm"
+              className="px-3 py-2 text-gray-700 hover:bg-gray-100 rounded transition-colors"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
+            </button>
+
+            <button 
+              onClick={handleDownloadCSV}
+              disabled={metricsData.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Download size={16} />
+              Download
+            </button>
+
+            <button
+              onClick={() => setShowRawData(!showRawData)}
+              className="px-4 py-2 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
+            >
+              {showRawData ? 'Hide' : 'Show'} Raw
             </button>
           </div>
         </div>
-
-        {/* Date Range Picker */}
-        <div className="bg-white p-4 rounded-lg shadow-sm flex items-center gap-4">
-          <Calendar size={20} className="text-gray-600" />
-          <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={dateRange.startDate}
-              onChange={(e) => handleDateChange('startDate', e.target.value)}
-              max={dateRange.endDate}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <span className="text-gray-500">to</span>
-            <input
-              type="date"
-              value={dateRange.endDate}
-              onChange={(e) => handleDateChange('endDate', e.target.value)}
-              min={dateRange.startDate}
-              max={new Date().toISOString().split('T')[0]}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-          <div className="ml-auto text-sm text-gray-600">
+        
+        {/* Account Filter Row */}
+        <div className="flex items-center gap-3 pt-3 border-t border-gray-100">
+          <label className="text-sm font-medium text-gray-700">Account:</label>
+          <select
+            value={selectedAccount}
+            onChange={(e) => setSelectedAccount(e.target.value)}
+            className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[300px]"
+          >
+            <option value="all">All Accounts</option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.account} ({account.country})
+              </option>
+            ))}
+          </select>
+          {selectedAccount !== 'all' && (
+            <button
+              onClick={() => setSelectedAccount('all')}
+              className="text-sm text-blue-600 hover:text-blue-800"
+            >
+              Clear filter
+            </button>
+          )}
+          <span className="text-sm text-gray-500 ml-auto">
             {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
-          </div>
-          <button className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-sm">
-            <Download size={16} />
-            Download
-          </button>
+          </span>
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
-          <strong>Error:</strong> {error}
+        <div className="mx-6 mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+          {error}
         </div>
       )}
 
-      {/* Raw API Response Display */}
       {showRawData && Object.keys(rawResponses).length > 0 && (
-        <div className="mb-6 bg-gray-900 text-green-400 rounded-lg p-6 overflow-auto max-h-[600px]">
-          <h2 className="text-xl font-bold mb-4 text-white">Complete API Responses</h2>
+        <div className="mx-6 mt-4 bg-gray-900 text-green-400 rounded p-4 overflow-auto max-h-96">
           {Object.entries(rawResponses).map(([accountId, data]) => (
-            <div key={accountId} className="mb-8">
-              <div className="bg-gray-800 p-3 rounded mb-2">
-                <h3 className="text-lg font-semibold text-yellow-400">
-                  Account: {data.account_name} ({data.account_country})
-                </h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  HTTP Status: {data.status} {data.statusText}
-                </p>
-                {data.error && (
-                  <p className="text-sm text-red-400 mt-1">
-                    Error: {data.error}
-                  </p>
-                )}
+            <div key={accountId} className="mb-4">
+              <div className="text-yellow-400 font-semibold mb-2">
+                {data.account_name} ({data.account_country})
               </div>
-              <div className="bg-black p-4 rounded">
-                <pre className="text-xs overflow-auto">
-                  {JSON.stringify(data.fullResponse, null, 2)}
-                </pre>
-              </div>
-              <div className="border-t border-gray-700 my-6"></div>
+              <pre className="text-xs">{JSON.stringify(data.fullResponse, null, 2)}</pre>
             </div>
           ))}
         </div>
       )}
 
       {loading && metricsData.length === 0 ? (
-        <div className="flex items-center justify-center h-96 bg-white rounded-lg shadow">
-          <div className="flex flex-col items-center gap-3">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-            <p className="text-gray-600">Loading report data from {accounts.length} account{accounts.length !== 1 ? 's' : ''}...</p>
-          </div>
+        <div className="flex items-center justify-center h-96">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
         </div>
-      ) : metricsData.length === 0 && !loading ? (
-        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-6 py-8 rounded-lg text-center">
-          <p className="text-lg font-semibold mb-2">No Data Available</p>
-          <p className="text-sm">
-            No report data could be retrieved for the selected date range. 
-            Please check if your accounts have Sponsor Solutions enabled and try again.
-          </p>
-          <button
-            onClick={handleRefresh}
-            className="mt-4 bg-yellow-600 text-white px-6 py-2 rounded-lg hover:bg-yellow-700 transition-colors"
-          >
-            Retry
-          </button>
+      ) : metricsData.length === 0 ? (
+        <div className="mx-6 mt-8 text-center text-gray-500">
+          No data available for the selected period
         </div>
       ) : (
         <>
-          {/* Key Metrics Section */}
-          <div className="mb-6">
-            <h2 className="text-xl font-bold mb-4">Revenue Metrics</h2>
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              <MetricCard 
-                title="Spend" 
+          {/* Metrics Row */}
+          <div className="border-b border-gray-200">
+            <div className="flex divide-x divide-gray-200">
+              <MetricBox 
+                label="Spend" 
                 value={totals.totalSpend} 
                 change={totals.avgSpendChange}
+                color="blue"
                 isCurrency={true}
-                color="text-blue-600"
               />
-              <MetricCard 
-                title="Revenue" 
-                value={totals.totalRevenue} 
-                change={totals.avgRevenueChange}
-                isCurrency={true}
-                color="text-green-600"
-              />
-              <MetricCard 
-                title="Orders" 
-                value={totals.totalOrders} 
-                change={totals.avgOrdersChange}
-                color="text-purple-600"
-              />
-              <MetricCard 
-                title="Units Sold" 
-                value={totals.totalUnitsSold} 
-                change={totals.avgUnitsSoldChange}
-                color="text-orange-600"
-              />
-              <MetricCard 
-                title="ROI" 
+              <MetricBox 
+                label="ROAS" 
                 value={totals.avgROI} 
                 change={totals.avgROIChange}
-                color="text-gray-900"
+                color="gray"
+              />
+              <MetricBox 
+                label="Clicks" 
+                value={totals.totalClicks} 
+                change={0}
+                color="gray"
+              />
+              <MetricBox 
+                label="Impressions" 
+                value={totals.totalImpressions} 
+                change={0}
+                color="gray"
+              />
+              <MetricBox 
+                label="CTR" 
+                value={totals.avgCTR} 
+                change={0}
+                color="gray"
+              />
+              <MetricBox 
+                label="CPC" 
+                value={totals.avgCPC} 
+                change={0}
+                color="gray"
+                isCurrency={true}
+              />
+              <MetricBox 
+                label="Revenue" 
+                value={totals.totalRevenue} 
+                change={totals.avgRevenueChange}
+                color="gray"
+                isCurrency={true}
+              />
+              <MetricBox 
+                label="Units Sold" 
+                value={totals.totalUnitsSold} 
+                change={totals.avgUnitsSoldChange}
+                color="gray"
               />
             </div>
           </div>
 
-          {/* Advertising Metrics Section */}
-          <div className="mb-6">
-            <h2 className="text-xl font-bold mb-4">Advertising Metrics</h2>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="bg-white p-6 rounded-lg shadow-sm">
-                <div className="text-sm font-medium text-gray-600">Impressions</div>
-                <div className="text-3xl font-bold mt-2">
-                  {totals.totalImpressions.toLocaleString('en-US')}
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-lg shadow-sm">
-                <div className="text-sm font-medium text-gray-600">Clicks</div>
-                <div className="text-3xl font-bold mt-2">
-                  {totals.totalClicks.toLocaleString('en-US')}
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-lg shadow-sm">
-                <div className="text-sm font-medium text-gray-600">Avg CTR</div>
-                <div className="text-3xl font-bold mt-2">
-                  {totals.avgCTR.toFixed(2)}%
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-lg shadow-sm">
-                <div className="text-sm font-medium text-gray-600">Avg CPC</div>
-                <div className="text-3xl font-bold mt-2">
-                  PHP {totals.avgCPC.toFixed(2)}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Chart Section */}
+          {/* Chart */}
           {chartData.length > 0 && (
-            <div className="bg-white p-6 rounded-lg shadow-sm mb-6">
-              <h2 className="text-xl font-bold mb-4">Performance Trend</h2>
-              <ResponsiveContainer width="100%" height={400}>
-                <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <div className="px-6 py-6">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={chartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                   <XAxis 
                     dataKey="date" 
-                    stroke="#9ca3af"
-                    style={{ fontSize: '12px' }}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#9ca3af', fontSize: 12 }}
                     tickFormatter={(value) => {
-                      const date = new Date(value);
-                      return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+                      const d = new Date(value);
+                      return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
                     }}
                   />
-                  {/* Left Y-axis for Spend */}
                   <YAxis 
                     yAxisId="left"
-                    stroke="#3b82f6"
-                    style={{ fontSize: '12px' }}
-                    label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#3b82f6' } }}
-                    tickFormatter={(value) => `${(value / 1000).toFixed(1)}k`}
+                    orientation="left"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#9ca3af', fontSize: 12 }}
+                    label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#6b7280', fontSize: 12 } }}
+                    domain={[0, 'auto']}
                   />
-                  {/* Right Y-axis for ROAS/ROI */}
                   <YAxis 
                     yAxisId="right"
                     orientation="right"
-                    stroke="#a855f7"
-                    style={{ fontSize: '12px' }}
-                    label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#a855f7' } }}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#9ca3af', fontSize: 12 }}
+                    label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#6b7280', fontSize: 12 } }}
+                    domain={[0, 'auto']}
                   />
                   <Tooltip 
                     contentStyle={{ 
-                      backgroundColor: 'white', 
+                      backgroundColor: 'rgba(255, 255, 255, 0.95)',
                       border: '1px solid #e5e7eb',
-                      borderRadius: '8px',
-                      padding: '12px'
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      padding: '8px 12px'
+                    }}
+                    labelFormatter={(label) => {
+                      const d = new Date(label);
+                      return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
                     }}
                     formatter={(value, name) => {
                       if (name === 'Spend') {
-                        return [`PHP ${parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2 })}`, 'Spend'];
+                        return [
+                          parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                          'Spend'
+                        ];
                       }
                       if (name === 'ROAS') {
-                        return [`${parseFloat(value).toFixed(2)}`, 'ROAS'];
+                        return [
+                          parseFloat(value).toFixed(2),
+                          'ROAS'
+                        ];
                       }
                       return [value, name];
                     }}
-                    labelFormatter={(label) => {
-                      const date = new Date(label);
-                      return date.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
-                    }}
                   />
                   <Legend 
-                    wrapperStyle={{ paddingTop: '20px' }}
+                    verticalAlign="bottom"
+                    height={36}
+                    iconType="line"
+                    wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }}
                   />
                   <Line 
                     yAxisId="left"
                     type="monotone" 
-                    dataKey="spend" 
-                    stroke="#3b82f6" 
-                    strokeWidth={3}
-                    dot={{ fill: '#3b82f6', r: 4 }}
-                    activeDot={{ r: 6 }}
-                    name="Spend"
+                    dataKey="Spend" 
+                    stroke="#60a5fa" 
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4, fill: '#60a5fa' }}
                   />
                   <Line 
                     yAxisId="right"
                     type="monotone" 
-                    dataKey="roi" 
-                    stroke="#a855f7" 
-                    strokeWidth={3}
-                    dot={{ fill: '#a855f7', r: 4 }}
-                    activeDot={{ r: 6 }}
-                    name="ROAS"
+                    dataKey="ROAS" 
+                    stroke="#c084fc" 
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4, fill: '#c084fc' }}
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Account Breakdown Table */}
-          {metricsData.length > 0 && (
-            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200">
-                <h2 className="text-xl font-bold">Account Breakdown</h2>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Country</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Spend</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Revenue</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Orders</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">ROI</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {metricsData.map((metric) => (
-                      <tr key={metric.account_id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{metric.account_name}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{metric.account_country}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
-                          PHP {metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
-                          PHP {metric.revenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
-                          {metric.orders.toLocaleString('en-US')}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
-                          {metric.roi.toFixed(2)}%
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
             </div>
           )}
         </>
