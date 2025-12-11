@@ -63,35 +63,28 @@ export default function DataInsights({ apiUrl }) {
     setChartData([]);
     setRawResponses({});
     
-    const promises = accountsList.map(account => 
-      fetchAccountReports(account)
-    );
-    
     try {
-      const results = await Promise.allSettled(promises);
-      
       const allMetrics = [];
       const allRawResponses = {};
       
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled' && result.value) {
-          const account = accountsList[index];
-          
-          if (result.value.parsed) {
-            allMetrics.push({
-              account_id: account.id,
-              account_name: account.account,
-              account_country: account.country,
-              timeline: result.value.timeline,
-              ...result.value.parsed
-            });
-          }
-          
-          if (result.value.rawResponse) {
-            allRawResponses[account.id] = result.value.rawResponse;
-          }
+      // Fetch reports for each account
+      for (const account of accountsList) {
+        const result = await fetchAccountReports(account);
+        
+        if (result && result.parsed) {
+          allMetrics.push({
+            account_id: account.id,
+            account_name: account.account,
+            account_country: account.country,
+            timeline: result.timeline,
+            ...result.parsed
+          });
         }
-      });
+        
+        if (result && result.rawResponse) {
+          allRawResponses[account.id] = result.rawResponse;
+        }
+      }
       
       setMetricsData(allMetrics);
       setRawResponses(allRawResponses);
@@ -152,102 +145,110 @@ export default function DataInsights({ apiUrl }) {
 
   const fetchAccountReports = async (account) => {
     try {
-      const params = new URLSearchParams({
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate
+      // Generate array of dates in the range
+      const start = new Date(dateRange.startDate);
+      const end = new Date(dateRange.endDate);
+      const dateList = [];
+      
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        dateList.push(new Date(d).toISOString().split('T')[0]);
+      }
+
+      // Fetch data for each individual day
+      const dailyDataPromises = dateList.map(async (date) => {
+        const params = new URLSearchParams({
+          startDate: date,
+          endDate: date
+        });
+
+        const response = await fetch(
+          `${apiUrl}/lazada/sponsor/solutions/report/getReportOverview?${params}`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${account.access_token}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        const data = await response.json();
+
+        if (response.ok && (data.code === '0' || data.code === 0)) {
+          const current = data.result?.reportOverviewDetailDTO || {};
+          
+          return {
+            date: date,
+            spend: parseFloat(current.spend || 0),
+            revenue: parseFloat(current.revenue || 0),
+            orders: parseInt(current.orders || 0),
+            unitsSold: parseInt(current.unitsSold || 0),
+            roi: parseFloat(current.roi || 0),
+            impressions: parseInt(current.impressions || 0),
+            clicks: parseInt(current.clicks || 0),
+            ctr: parseFloat(current.ctr || 0),
+            cpc: parseFloat(current.cpc || 0)
+          };
+        }
+        
+        return null;
       });
 
-      const response = await fetch(
-        `${apiUrl}/lazada/sponsor/solutions/report/getReportOverview?${params}`,
-        {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${account.access_token}`,
-            'Content-Type': 'application/json'
-          }
+      const dailyResults = await Promise.all(dailyDataPromises);
+      const timeline = dailyResults.filter(d => d !== null);
+
+      // Calculate aggregated metrics for the entire period
+      const calculateChange = (current, previous) => {
+        if (previous === 0) return 0;
+        return ((current - previous) / previous) * 100;
+      };
+
+      const totalMetrics = timeline.reduce((acc, day) => ({
+        spend: acc.spend + day.spend,
+        revenue: acc.revenue + day.revenue,
+        orders: acc.orders + day.orders,
+        unitsSold: acc.unitsSold + day.unitsSold,
+        roi: acc.roi + day.roi,
+        impressions: acc.impressions + day.impressions,
+        clicks: acc.clicks + day.clicks,
+        ctr: acc.ctr + day.ctr,
+        cpc: acc.cpc + day.cpc
+      }), {
+        spend: 0,
+        revenue: 0,
+        orders: 0,
+        unitsSold: 0,
+        roi: 0,
+        impressions: 0,
+        clicks: 0,
+        ctr: 0,
+        cpc: 0
+      });
+
+      const avgMetrics = {
+        ...totalMetrics,
+        roi: timeline.length > 0 ? totalMetrics.roi / timeline.length : 0,
+        ctr: timeline.length > 0 ? totalMetrics.ctr / timeline.length : 0,
+        cpc: timeline.length > 0 ? totalMetrics.cpc / timeline.length : 0,
+        spendChange: 0,
+        revenueChange: 0,
+        ordersChange: 0,
+        unitsSoldChange: 0,
+        roiChange: 0
+      };
+
+      return { 
+        parsed: avgMetrics,
+        timeline: timeline,
+        rawResponse: {
+          account_name: account.account,
+          account_country: account.country,
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          fullResponse: { message: `Fetched ${timeline.length} days of data` }
         }
-      );
-
-      const data = await response.json();
-
-      if (response.ok && (data.code === '0' || data.code === 0)) {
-        const current = data.result?.reportOverviewDetailDTO || {};
-        const previous = data.result?.lastReportOverviewDetailDTO || {};
-
-        const calculateChange = (current, previous) => {
-          if (previous === 0) return 0;
-          return ((current - previous) / previous) * 100;
-        };
-
-        const metrics = {
-          spend: parseFloat(current.spend || 0),
-          revenue: parseFloat(current.revenue || 0),
-          orders: parseInt(current.orders || 0),
-          unitsSold: parseInt(current.unitsSold || 0),
-          roi: parseFloat(current.roi || 0),
-          impressions: parseInt(current.impressions || 0),
-          clicks: parseInt(current.clicks || 0),
-          ctr: parseFloat(current.ctr || 0),
-          cpc: parseFloat(current.cpc || 0),
-          spendChange: calculateChange(current.spend, previous.spend),
-          revenueChange: calculateChange(current.revenue, previous.revenue),
-          ordersChange: calculateChange(current.orders, previous.orders),
-          unitsSoldChange: calculateChange(current.unitsSold, previous.unitsSold),
-          roiChange: calculateChange(current.roi, previous.roi)
-        };
-
-        const startDate = new Date(dateRange.startDate);
-        const endDate = new Date(dateRange.endDate);
-        const midDate = new Date((startDate.getTime() + endDate.getTime()) / 2);
-        
-        const timeline = [
-          {
-            date: startDate.toISOString().split('T')[0],
-            spend: previous.spend || 0,
-            roi: previous.roi || 0,
-          },
-          {
-            date: midDate.toISOString().split('T')[0],
-            spend: (previous.spend + current.spend) / 2 || 0,
-            roi: (previous.roi + current.roi) / 2 || 0,
-          },
-          {
-            date: endDate.toISOString().split('T')[0],
-            spend: current.spend || 0,
-            roi: current.roi || 0,
-          }
-        ];
-        
-        return { 
-          parsed: metrics,
-          timeline: timeline,
-          rawResponse: {
-            account_name: account.account,
-            account_country: account.country,
-            status: response.status,
-            statusText: response.statusText,
-            headers: {
-              'content-type': response.headers.get('content-type'),
-              'date': response.headers.get('date')
-            },
-            fullResponse: data
-          }
-        };
-      } else {
-        return { 
-          parsed: null,
-          timeline: [],
-          rawResponse: {
-            account_name: account.account,
-            account_country: account.country,
-            status: response.status,
-            statusText: response.statusText,
-            headers: {},
-            fullResponse: data,
-            error: data.message || data.error || 'Unknown error'
-          }
-        };
-      }
+      };
     } catch (err) {
       return { 
         parsed: null,
@@ -298,37 +299,81 @@ export default function DataInsights({ apiUrl }) {
       'Direct Conversion'
     ];
 
-    // Generate CSV rows
-    const rows = filteredData.map(metric => {
-      const cvr = metric.orders > 0 ? ((metric.orders / metric.clicks) * 100).toFixed(2) : '0.00';
-      const costPerOrder = metric.orders > 0 ? (metric.spend / metric.orders).toFixed(2) : '0.00';
-      const directCvr = '0.00'; // Default values for unavailable metrics
-      const costPerDirectOrder = '0.00';
-      const directConversion = '0.00';
-      
-      return [
-        dateRange.endDate, // Using end date as the report date
-        metric.spend.toFixed(2),
-        metric.revenue.toFixed(2),
-        metric.orders,
-        metric.roi.toFixed(2),
-        metric.impressions,
-        metric.clicks,
-        metric.unitsSold,
-        0, // Add To Cart - not available in current data
-        cvr + '%',
-        0, // Direct Orders - not available
-        0, // Direct Quick Orders - not available
-        0, // Direct Unit Sold - not available
-        0, // Direct Add To Cart - not available
-        (metric.ctr * 100).toFixed(2) + '%',
-        metric.cpc.toFixed(2),
-        costPerOrder,
-        directCvr + '%',
-        costPerDirectOrder,
-        directConversion
-      ];
+    // Collect all timeline data from filtered accounts and organize by date
+    const dateMap = {};
+    
+    filteredData.forEach(metric => {
+      if (metric.timeline && Array.isArray(metric.timeline)) {
+        metric.timeline.forEach(timelineItem => {
+          const date = timelineItem.date;
+          
+          if (!dateMap[date]) {
+            dateMap[date] = {
+              spend: 0,
+              revenue: 0,
+              orders: 0,
+              roi: 0,
+              impressions: 0,
+              clicks: 0,
+              unitsSold: 0,
+              ctr: 0,
+              cpc: 0,
+              count: 0
+            };
+          }
+          
+          // Aggregate metrics for this date across all filtered accounts
+          dateMap[date].spend += timelineItem.spend || 0;
+          dateMap[date].revenue += timelineItem.revenue || 0;
+          dateMap[date].orders += timelineItem.orders || 0;
+          dateMap[date].roi += timelineItem.roi || 0;
+          dateMap[date].impressions += timelineItem.impressions || 0;
+          dateMap[date].clicks += timelineItem.clicks || 0;
+          dateMap[date].unitsSold += timelineItem.unitsSold || 0;
+          dateMap[date].ctr += timelineItem.ctr || 0;
+          dateMap[date].cpc += timelineItem.cpc || 0;
+          dateMap[date].count += 1;
+        });
+      }
     });
+
+    // Generate CSV rows for each date
+    const rows = Object.keys(dateMap)
+      .sort((a, b) => new Date(a) - new Date(b))
+      .map(date => {
+        const data = dateMap[date];
+        const count = data.count;
+        
+        // Calculate averages and derived metrics
+        const avgRoi = count > 0 ? data.roi / count : 0;
+        const avgCtr = count > 0 ? data.ctr / count : 0;
+        const avgCpc = count > 0 ? data.cpc / count : 0;
+        const cvr = data.clicks > 0 ? ((data.orders / data.clicks) * 100) : 0;
+        const costPerOrder = data.orders > 0 ? (data.spend / data.orders) : 0;
+        
+        return [
+          date,
+          data.spend.toFixed(2),
+          data.revenue.toFixed(2),
+          data.orders,
+          avgRoi.toFixed(2),
+          data.impressions,
+          data.clicks,
+          data.unitsSold,
+          0, // Add To Cart - not available in current data
+          cvr.toFixed(2) + '%',
+          0, // Direct Orders - not available
+          0, // Direct Quick Orders - not available
+          0, // Direct Unit Sold - not available
+          0, // Direct Add To Cart - not available
+          (avgCtr).toFixed(2) + '%',
+          avgCpc.toFixed(2),
+          costPerOrder.toFixed(2),
+          '0.00%', // Direct CVR - not available
+          '0.00', // Cost per Direct Order - not available
+          '0.00' // Direct Conversion - not available
+        ];
+      });
 
     // Combine headers and rows
     const csvContent = [
