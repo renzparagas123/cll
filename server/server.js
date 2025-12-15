@@ -18,7 +18,7 @@ const lazadaAuth = new LazadaAuth(
 // CORS configuration
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://cloudecomm-web.github.io']
+    ? ['https://renzparagas123.github.io']
     : ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -63,7 +63,7 @@ app.get('/api/test', (req, res) => {
 app.get('/api/lazada/auth-url', (req, res) => {
     try {
         const redirectUri = process.env.NODE_ENV === 'production'
-            ? 'https://cloudecomm-web.github.io/cll/callback'
+            ? 'https://renzparagas123.github.io/cll/callback'
             : 'http://localhost:5173/callback';
 
         const authUrl = `https://auth.lazada.com/oauth/authorize?response_type=code&force_auth=true&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${process.env.LAZADA_APP_KEY}`;
