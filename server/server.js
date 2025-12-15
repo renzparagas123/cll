@@ -622,38 +622,59 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
     try {
         const {
             campaignId,
+            campaignName,
             startDate,
             endDate,
+            productType = 'ALL',
+            sort = 'impressions',
+            order = 'DESC',
             pageNo = '1',
-            pageSize = '1000'
+            pageSize = '100',
+            useRtTable = 'true'
         } = req.query;
 
         console.log('\n' + '='.repeat(60));
         console.log('GET CAMPAIGN REPORT ON PRE-PLACEMENT REQUEST');
         console.log('='.repeat(60));
-        console.log('Query params:', { campaignId, startDate, endDate, pageNo, pageSize });
+        console.log('Query params:', { 
+            campaignId, 
+            campaignName, 
+            startDate, 
+            endDate, 
+            productType,
+            sort,
+            order,
+            pageNo, 
+            pageSize,
+            useRtTable 
+        });
 
-        if (!campaignId || !startDate || !endDate) {
+        if (!startDate || !endDate) {
             return res.status(400).json({
                 error: 'Missing required parameters',
-                details: 'campaignId, startDate, and endDate are required (format: YYYY-MM-DD)'
+                details: 'startDate and endDate are required (format: YYYY-MM-DD)'
             });
         }
 
         const params = {
-            campaignId,
             startDate,
             endDate,
+            productType,
+            sort,
+            order,
             pageNo,
-            pageSize
+            pageSize,
+            useRtTable
         };
 
+        // Add optional parameters
+        if (campaignId) params.campaignId = campaignId;
+        if (campaignName) params.campaignName = campaignName;
+
         console.log('✅ Params for Lazada API:');
-        console.log('   campaignId:', params.campaignId);
-        console.log('   startDate:', params.startDate);
-        console.log('   endDate:', params.endDate);
-        console.log('   pageNo:', params.pageNo);
-        console.log('   pageSize:', params.pageSize);
+        Object.entries(params).forEach(([key, value]) => {
+            console.log(`   ${key}:`, value);
+        });
 
         console.log('\n📤 Calling Lazada API with GET method');
         
@@ -667,7 +688,8 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
         console.log('\n📥 Response received:');
         console.log('   Code:', reportData.code);
         console.log('   Message:', reportData.message);
-        console.log('   Reports found:', reportData.result?.result?.length || 0);
+        console.log('   Records found:', reportData.result?.result?.length || 0);
+        console.log('   Total count:', reportData.result?.totalCount || 0);
 
         if (reportData.code !== '0' && reportData.code !== 0) {
             console.error('\n❌ API returned error:');
@@ -703,7 +725,6 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
         });
     }
 });
-
 // ============================================
 // ERROR HANDLING
 // ============================================
