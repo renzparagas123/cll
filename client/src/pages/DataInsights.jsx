@@ -308,11 +308,13 @@ export default function DataInsights({ apiUrl }) {
       const dailyDataPromises = dateList.map(async (date) => {
         const params = new URLSearchParams({
           startDate: date,
-          endDate: date
+          endDate: date,
+          pageNo: '1',
+          pageSize: '1000'
         });
 
         const response = await fetch(
-          `${apiUrl}/lazada/sponsor/solutions/report/getReportOverview?${params}`,
+          `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
           {
             method: 'GET',
             headers: {
@@ -325,19 +327,57 @@ export default function DataInsights({ apiUrl }) {
         const data = await response.json();
 
         if (response.ok && (data.code === '0' || data.code === 0)) {
-          const current = data.result?.reportOverviewDetailDTO || {};
+          const campaigns = data.result?.result || [];
+          
+          // Aggregate all campaigns for this day
+          const dayTotals = campaigns.reduce((acc, campaign) => ({
+            spend: acc.spend + parseFloat(campaign.spend || 0),
+            storeRevenue: acc.storeRevenue + parseFloat(campaign.storeRevenue || 0),
+            productRevenue: acc.productRevenue + parseFloat(campaign.productRevenue || 0),
+            storeOrders: acc.storeOrders + parseInt(campaign.storeOrders || 0),
+            productOrders: acc.productOrders + parseInt(campaign.productOrders || 0),
+            storeUnitSold: acc.storeUnitSold + parseInt(campaign.storeUnitSold || 0),
+            productUnitSold: acc.productUnitSold + parseInt(campaign.productUnitSold || 0),
+            impressions: acc.impressions + parseInt(campaign.impressions || 0),
+            clicks: acc.clicks + parseInt(campaign.clicks || 0),
+            roiSum: acc.roiSum + parseFloat(campaign.storeRoi || 0),
+            ctrSum: acc.ctrSum + parseFloat(campaign.ctr || 0),
+            cpcSum: acc.cpcSum + parseFloat(campaign.cpc || 0),
+            count: acc.count + 1
+          }), {
+            spend: 0,
+            storeRevenue: 0,
+            productRevenue: 0,
+            storeOrders: 0,
+            productOrders: 0,
+            storeUnitSold: 0,
+            productUnitSold: 0,
+            impressions: 0,
+            clicks: 0,
+            roiSum: 0,
+            ctrSum: 0,
+            cpcSum: 0,
+            count: 0
+          });
+
+          const totalRevenue = dayTotals.storeRevenue + dayTotals.productRevenue;
+          const totalOrders = dayTotals.storeOrders + dayTotals.productOrders;
+          const totalUnitsSold = dayTotals.storeUnitSold + dayTotals.productUnitSold;
+          const avgRoi = dayTotals.count > 0 ? dayTotals.roiSum / dayTotals.count : 0;
+          const avgCtr = dayTotals.count > 0 ? dayTotals.ctrSum / dayTotals.count : 0;
+          const avgCpc = dayTotals.count > 0 ? dayTotals.cpcSum / dayTotals.count : 0;
           
           return {
             date: date,
-            spend: parseFloat(current.spend || 0),
-            revenue: parseFloat(current.revenue || 0),
-            orders: parseInt(current.orders || 0),
-            unitsSold: parseInt(current.unitsSold || 0),
-            roi: parseFloat(current.roi || 0),
-            impressions: parseInt(current.impressions || 0),
-            clicks: parseInt(current.clicks || 0),
-            ctr: parseFloat(current.ctr || 0),
-            cpc: parseFloat(current.cpc || 0)
+            spend: dayTotals.spend,
+            revenue: totalRevenue,
+            orders: totalOrders,
+            unitsSold: totalUnitsSold,
+            roi: avgRoi,
+            impressions: dayTotals.impressions,
+            clicks: dayTotals.clicks,
+            ctr: avgCtr,
+            cpc: avgCpc
           };
         }
         
@@ -638,7 +678,7 @@ export default function DataInsights({ apiUrl }) {
               <MetricBox label="CTR" value={totals.avgCTR} change={0} color="gray" />
               <MetricBox label="CPC" value={totals.avgCPC} change={0} color="gray" isCurrency={true} />
               <MetricBox label="Revenue" value={totals.totalRevenue} change={totals.avgRevenueChange} color="gray" isCurrency={true} />
-              <MetricBox label="Units Sold" value={totals.totalUnitsSold} change={totals.avgUnitsSoldChange} color="gray" />
+              <MetricBox label="Orders" value={totals.totalOrders} change={totals.avgOrdersChange} color="gray" />
             </div>
           </div>
 
