@@ -1,781 +1,763 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import LazadaAuth from './utils/lazadaAuth.js';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { Calendar, Download, RefreshCw, Info } from 'lucide-react';
+import { AccountManager } from '../utils/AccountManager';
 
-dotenv.config();
+export default function DataInsights({ apiUrl }) {
+  const navigate = useNavigate();
+  const [accounts, setAccounts] = useState([]);
+  const [metricsData, setMetricsData] = useState([]);
+  const [chartData, setChartData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [showRawData, setShowRawData] = useState(false);
+  const [rawResponses, setRawResponses] = useState({});
+  const [campaigns, setCampaigns] = useState([]);
+  const [selectedCampaign, setSelectedCampaign] = useState('overview');
+  const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+  
+  const getDefaultDates = () => {
+    const today = new Date();
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 7);
+    
+    return {
+      startDate: sevenDaysAgo.toISOString().split('T')[0],
+      endDate: today.toISOString().split('T')[0]
+    };
+  };
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+  const [dateRange, setDateRange] = useState(getDefaultDates());
+  const [selectedAccount, setSelectedAccount] = useState('all');
 
-// Initialize Lazada Auth
-const lazadaAuth = new LazadaAuth(
-    process.env.LAZADA_APP_KEY,
-    process.env.LAZADA_APP_SECRET,
-    process.env.LAZADA_API_URL
-);
-
-// CORS configuration
-const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://cloudecomm-web.github.io']
-    : ['http://localhost:5173', 'http://localhost:3000'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
-
-// Middleware
-app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Request logging middleware
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
-});
-
-// ============================================
-// BASIC ENDPOINTS
-// ============================================
-
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        environment: process.env.NODE_ENV || 'development'
-    });
-});
-
-app.get('/api/test', (req, res) => {
-    res.json({
-        message: 'API is working!',
-        timestamp: new Date().toISOString()
-    });
-});
-
-// ============================================
-// LAZADA AUTHENTICATION ENDPOINTS
-// ============================================
-
-// Get Lazada authorization URL
-app.get('/api/lazada/auth-url', (req, res) => {
-    try {
-        const redirectUri = process.env.NODE_ENV === 'production'
-            ? 'https://cloudecomm-web.github.io/cll/callback'
-            : 'http://localhost:5173/callback';
-
-        const authUrl = `https://auth.lazada.com/oauth/authorize?response_type=code&force_auth=true&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${process.env.LAZADA_APP_KEY}`;
-
-        res.json({
-            authUrl,
-            redirectUri,
-            clientId: process.env.LAZADA_APP_KEY
-        });
-    } catch (error) {
-        res.status(500).json({
-            error: 'Failed to generate auth URL',
-            details: error.message
-        });
+  useEffect(() => {
+    const allAccounts = AccountManager.getAccounts();
+    
+    if (allAccounts.length === 0) {
+      navigate('/', { replace: true });
+      return;
     }
-});
+    
+    setAccounts(allAccounts);
+    
+    const arlaAccount = allAccounts.find(acc => 
+      acc.account?.toLowerCase().includes('arla') || 
+      acc.id?.toLowerCase().includes('arla')
+    );
+    
+    if (arlaAccount) {
+      setSelectedAccount(arlaAccount.id);
+    }
+    
+    fetchAllAccountsReports(allAccounts);
+  }, [navigate]);
 
-// Exchange authorization code for access token
-app.post('/api/lazada/token', async (req, res) => {
+  useEffect(() => {
+    if (accounts.length > 0 && selectedCampaign === 'overview') {
+      fetchAllAccountsReports(accounts);
+    }
+  }, [dateRange]);
+
+  useEffect(() => {
+    if (selectedAccount && selectedAccount !== 'all') {
+      fetchCampaigns(selectedAccount);
+    } else {
+      setCampaigns([]);
+      setSelectedCampaign('overview');
+    }
+  }, [selectedAccount]);
+
+  useEffect(() => {
+    if (selectedCampaign && selectedCampaign !== 'overview' && accounts.length > 0) {
+      fetchCampaignPrePlacementData();
+    }
+  }, [selectedCampaign, dateRange]);
+
+  const fetchCampaigns = async (accountId) => {
+    setLoadingCampaigns(true);
     try {
-        const { code } = req.body;
+      const account = accounts.find(acc => acc.id === accountId);
+      if (!account) return;
 
-        if (!code) {
-            return res.status(400).json({
-                error: 'Authorization code is required'
-            });
+      const response = await fetch(
+        `${apiUrl}/lazada/sponsor/solutions/campaign/getCampaignList?pageNo=1&pageSize=100`,
+        {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${account.access_token}`,
+            'Content-Type': 'application/json'
+          }
         }
+      );
 
-        console.log('Exchanging code for token...');
-        const tokenData = await lazadaAuth.createAccessToken(code);
+      const data = await response.json();
 
-        if (tokenData.code !== '0' && tokenData.code !== 0) {
-            console.error('Token exchange failed:', tokenData);
-            return res.status(400).json({
-                error: 'Failed to exchange token',
-                details: tokenData.message || 'Unknown error',
-                lazada_code: tokenData.code
-            });
-        }
-
-        console.log('Token received successfully');
-        res.json({
-            success: true,
-            access_token: tokenData.access_token,
-            refresh_token: tokenData.refresh_token,
-            expires_in: tokenData.expires_in,
-            refresh_expires_in: tokenData.refresh_expires_in,
-            account: tokenData.account,
-            country: tokenData.country,
-            country_user_info: tokenData.country_user_info,
-            account_platform: tokenData.account_platform
-        });
+      if (response.ok && (data.code === '0' || data.code === 0)) {
+        setCampaigns(data.result?.campaigns || []);
+      } else {
+        console.error('Failed to fetch campaigns:', data);
+        setCampaigns([]);
+      }
     } catch (error) {
-        console.error('Token exchange error:', error);
-        res.status(500).json({
-            error: 'Failed to get access token',
-            details: error.response?.data || error.message
-        });
+      console.error('Error fetching campaigns:', error);
+      setCampaigns([]);
+    } finally {
+      setLoadingCampaigns(false);
     }
-});
+  };
 
-// Refresh access token
-app.post('/api/lazada/refresh-token', async (req, res) => {
+  const fetchCampaignPrePlacementData = async () => {
+    if (!selectedCampaign || selectedCampaign === 'overview') return;
+
+    setLoading(true);
+    setError(null);
+
     try {
-        const { refreshToken } = req.body;
+      const account = accounts.find(acc => acc.id === selectedAccount);
+      if (!account) return;
 
-        if (!refreshToken) {
-            return res.status(400).json({
-                error: 'Refresh token is required'
-            });
+      const selectedCampaignData = campaigns.find(c => c.campaignId === selectedCampaign);
+
+      const params = new URLSearchParams({
+        campaignId: selectedCampaign,
+        startDate: dateRange.startDate,
+        endDate: dateRange.endDate,
+        productType: 'ALL',
+        sort: 'impressions',
+        order: 'DESC',
+        pageNo: '1',
+        pageSize: '100',
+        useRtTable: 'true'
+      });
+
+      if (selectedCampaignData?.campaignName) {
+        params.append('campaignName', selectedCampaignData.campaignName);
+      }
+
+      const response = await fetch(
+        `${apiUrl}/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement?${params}`,
+        {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${account.access_token}`,
+            'Content-Type': 'application/json'
+          }
         }
+      );
 
-        console.log('Refreshing token...');
-        const tokenData = await lazadaAuth.refreshAccessToken(refreshToken);
+      const data = await response.json();
 
-        if (tokenData.code !== '0' && tokenData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to refresh token',
-                details: tokenData.message,
-                lazada_code: tokenData.code
-            });
-        }
-
-        res.json({
-            success: true,
-            access_token: tokenData.access_token,
-            refresh_token: tokenData.refresh_token,
-            expires_in: tokenData.expires_in,
-            refresh_expires_in: tokenData.refresh_expires_in
-        });
-    } catch (error) {
-        console.error('Token refresh error:', error);
-        res.status(500).json({
-            error: 'Failed to refresh token',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// ============================================
-// MIDDLEWARE - Verify Access Token
-// ============================================
-
-const verifyToken = (req, res, next) => {
-    const accessToken = req.headers.authorization?.replace('Bearer ', '');
-
-    if (!accessToken) {
-        return res.status(401).json({
-            error: 'Access token is required',
-            message: 'Please provide Authorization header with Bearer token'
-        });
-    }
-
-    req.accessToken = accessToken;
-    next();
-};
-
-// ============================================
-// LAZADA API ENDPOINTS (Protected)
-// ============================================
-
-// Get seller information
-app.get('/api/lazada/seller', verifyToken, async (req, res) => {
-    try {
-        const sellerData = await lazadaAuth.makeRequest(
-            '/seller/get',
-            req.accessToken
-        );
-
-        res.json(sellerData);
-    } catch (error) {
-        console.error('Seller data error:', error);
-        res.status(500).json({
-            error: 'Failed to get seller data',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get seller policy information
-app.get('/api/lazada/seller/policy', verifyToken, async (req, res) => {
-    try {
-        console.log('Fetching seller policy...');
+      if (response.ok && (data.code === '0' || data.code === 0)) {
+        const campaigns = data.result?.result || [];
         
-        const locale = req.query.locale || 'en_US';
+        const processedMetrics = campaigns.map(campaign => ({
+          account_id: account.id,
+          account_name: account.account,
+          account_country: account.country,
+          campaignName: campaign.campaignName || 'Unknown',
+          campaignId: campaign.campaignId,
+          productType: campaign.productType,
+          campaignType: campaign.campaignType,
+          campaignObjective: campaign.campaignObjective,
+          spend: parseFloat(campaign.spend || 0),
+          revenue: parseFloat(campaign.storeRevenue || campaign.productRevenue || 0),
+          storeRevenue: parseFloat(campaign.storeRevenue || 0),
+          productRevenue: parseFloat(campaign.productRevenue || 0),
+          orders: parseInt(campaign.storeOrders || campaign.productOrders || 0),
+          storeOrders: parseInt(campaign.storeOrders || 0),
+          productOrders: parseInt(campaign.productOrders || 0),
+          unitsSold: parseInt(campaign.storeUnitSold || campaign.productUnitSold || 0),
+          storeUnitSold: parseInt(campaign.storeUnitSold || 0),
+          productUnitSold: parseInt(campaign.productUnitSold || 0),
+          roi: parseFloat(campaign.storeRoi || 0),
+          impressions: parseInt(campaign.impressions || 0),
+          clicks: parseInt(campaign.clicks || 0),
+          ctr: parseFloat(campaign.ctr || 0),
+          cpc: parseFloat(campaign.cpc || 0),
+          cvr: parseFloat(campaign.storeCvr || campaign.productCvr || 0),
+          storeCvr: parseFloat(campaign.storeCvr || 0),
+          productCvr: parseFloat(campaign.productCvr || 0),
+          a2c: parseInt(campaign.storeA2c || campaign.productA2c || 0),
+          storeA2c: parseInt(campaign.storeA2c || 0),
+          productA2c: parseInt(campaign.productA2c || 0),
+          dayBudget: parseFloat(campaign.dayBudget || 0),
+          firstImpShare: campaign.firstImpShare,
+          timeline: []
+        }));
+
+        setMetricsData(processedMetrics);
+        setRawResponses({ [account.id]: data });
         
-        const policyData = await lazadaAuth.makeRequest(
-            '/seller/policy/fetch',
-            req.accessToken,
-            { locale: locale }
-        );
-
-        if (policyData.code !== '0' && policyData.code !== 0) {
-            console.error('Seller policy fetch failed:', policyData);
-            return res.status(400).json({
-                error: 'Failed to get seller policy',
-                details: policyData.message || 'Unknown error',
-                lazada_code: policyData.code
-            });
-        }
-
-        console.log('Seller policy fetched successfully');
-        res.json(policyData);
-    } catch (error) {
-        console.error('Seller policy error:', error);
-        res.status(500).json({
-            error: 'Failed to get seller policy',
-            details: error.response?.data || error.message
-        });
+        const chartTimeline = processedMetrics.map(campaign => ({
+          date: `${campaign.campaignName} (${campaign.productType})`,
+          Spend: campaign.spend,
+          ROAS: campaign.roi
+        }));
+        
+        setChartData(chartTimeline);
+      } else {
+        setError(`Failed to fetch campaign data: ${data.message}`);
+      }
+    } catch (err) {
+      setError('Failed to fetch campaign pre-placement data');
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
-});
+  };
 
-// Get products
-app.get('/api/lazada/products', verifyToken, async (req, res) => {
+  const fetchAllAccountsReports = async (accountsList) => {
+    if (selectedCampaign !== 'overview') return;
+
+    setLoading(true);
+    setError(null);
+    setMetricsData([]);
+    setChartData([]);
+    setRawResponses({});
+    
     try {
-        const { filter = 'all', limit = 20, offset = 0 } = req.query;
+      const allMetrics = [];
+      const allRawResponses = {};
+      
+      for (const account of accountsList) {
+        const result = await fetchAccountReports(account);
+        
+        if (result && result.parsed) {
+          allMetrics.push({
+            account_id: account.id,
+            account_name: account.account,
+            account_country: account.country,
+            timeline: result.timeline,
+            ...result.parsed
+          });
+        }
+        
+        if (result && result.rawResponse) {
+          allRawResponses[account.id] = result.rawResponse;
+        }
+      }
+      
+      setMetricsData(allMetrics);
+      setRawResponses(allRawResponses);
+      
+      updateChartData(allMetrics, selectedAccount);
+    } catch (err) {
+      setError('Failed to fetch report data');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        const productsData = await lazadaAuth.makeRequest(
-            '/products/get',
-            req.accessToken,
-            {
-                filter,
-                limit: parseInt(limit),
-                offset: parseInt(offset)
+  const updateChartData = (metrics, accountFilter) => {
+    const filteredMetrics = accountFilter === 'all' 
+      ? metrics 
+      : metrics.filter(m => m.account_id === accountFilter);
+
+    if (filteredMetrics.length === 0) {
+      setChartData([]);
+      return;
+    }
+
+    const timelineDataByDate = {};
+    
+    filteredMetrics.forEach(metric => {
+      if (metric.timeline) {
+        metric.timeline.forEach(item => {
+          if (!timelineDataByDate[item.date]) {
+            timelineDataByDate[item.date] = { 
+              date: item.date, 
+              spend: 0, 
+              roi: 0,
+              count: 0 
+            };
+          }
+          timelineDataByDate[item.date].spend += item.spend || 0;
+          timelineDataByDate[item.date].roi += item.roi || 0;
+          timelineDataByDate[item.date].count += 1;
+        });
+      }
+    });
+    
+    const chartTimeline = Object.values(timelineDataByDate).map(item => ({
+      date: item.date,
+      Spend: item.spend,
+      ROAS: item.count > 0 ? item.roi / item.count : 0
+    })).sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    setChartData(chartTimeline);
+  };
+
+  useEffect(() => {
+    if (metricsData.length > 0 && selectedCampaign === 'overview') {
+      updateChartData(metricsData, selectedAccount);
+    }
+  }, [selectedAccount]);
+
+  const fetchAccountReports = async (account) => {
+    try {
+      const start = new Date(dateRange.startDate);
+      const end = new Date(dateRange.endDate);
+      const dateList = [];
+      
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        dateList.push(new Date(d).toISOString().split('T')[0]);
+      }
+
+      const dailyDataPromises = dateList.map(async (date) => {
+        const params = new URLSearchParams({
+          startDate: date,
+          endDate: date,
+          pageNo: '1',
+          pageSize: '1000'
+        });
+
+        const response = await fetch(
+          `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${account.access_token}`,
+              'Content-Type': 'application/json'
             }
+          }
         );
 
-        res.json(productsData);
-    } catch (error) {
-        console.error('Products error:', error);
-        res.status(500).json({
-            error: 'Failed to get products',
-            details: error.response?.data || error.message
-        });
-    }
-});
+        const data = await response.json();
 
-// Get orders
-app.get('/api/lazada/orders', verifyToken, async (req, res) => {
-    try {
-        const {
-            created_after,
-            created_before,
-            limit = 20,
-            offset = 0,
-            status,
-            sort_by = 'created_at',
-            sort_direction = 'DESC'
-        } = req.query;
+        if (response.ok && (data.code === '0' || data.code === 0)) {
+          const campaigns = data.result?.result || [];
+          
+          // Aggregate all campaigns for this day
+          const dayTotals = campaigns.reduce((acc, campaign) => ({
+            spend: acc.spend + parseFloat(campaign.spend || 0),
+            storeRevenue: acc.storeRevenue + parseFloat(campaign.storeRevenue || 0),
+            productRevenue: acc.productRevenue + parseFloat(campaign.productRevenue || 0),
+            storeOrders: acc.storeOrders + parseInt(campaign.storeOrders || 0),
+            productOrders: acc.productOrders + parseInt(campaign.productOrders || 0),
+            storeUnitSold: acc.storeUnitSold + parseInt(campaign.storeUnitSold || 0),
+            productUnitSold: acc.productUnitSold + parseInt(campaign.productUnitSold || 0),
+            impressions: acc.impressions + parseInt(campaign.impressions || 0),
+            clicks: acc.clicks + parseInt(campaign.clicks || 0),
+            roiSum: acc.roiSum + parseFloat(campaign.storeRoi || 0),
+            ctrSum: acc.ctrSum + parseFloat(campaign.ctr || 0),
+            cpcSum: acc.cpcSum + parseFloat(campaign.cpc || 0),
+            count: acc.count + 1
+          }), {
+            spend: 0,
+            storeRevenue: 0,
+            productRevenue: 0,
+            storeOrders: 0,
+            productOrders: 0,
+            storeUnitSold: 0,
+            productUnitSold: 0,
+            impressions: 0,
+            clicks: 0,
+            roiSum: 0,
+            ctrSum: 0,
+            cpcSum: 0,
+            count: 0
+          });
 
-        const params = {
-            limit: parseInt(limit),
-            offset: parseInt(offset),
-            sort_by,
-            sort_direction
-        };
-
-        if (created_after) params.created_after = created_after;
-        if (created_before) params.created_before = created_before;
-        if (status) params.status = status;
-
-        const ordersData = await lazadaAuth.makeRequest(
-            '/orders/get',
-            req.accessToken,
-            params
-        );
-
-        res.json(ordersData);
-    } catch (error) {
-        console.error('Orders error:', error);
-        res.status(500).json({
-            error: 'Failed to get orders',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get order details
-app.get('/api/lazada/order/:orderId', verifyToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-
-        const orderData = await lazadaAuth.makeRequest(
-            '/order/get',
-            req.accessToken,
-            { order_id: orderId }
-        );
-
-        res.json(orderData);
-    } catch (error) {
-        console.error('Order details error:', error);
-        res.status(500).json({
-            error: 'Failed to get order details',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// ============================================
-// ORDER ITEMS ENDPOINTS
-// ============================================
-
-// Get items for a single order
-app.get('/api/lazada/order/:orderId/items', verifyToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-
-        console.log(`Fetching items for order: ${orderId}`);
-        const orderItemsData = await lazadaAuth.getOrderItems(
-            req.accessToken,
-            orderId
-        );
-
-        if (orderItemsData.code !== '0' && orderItemsData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to get order items',
-                details: orderItemsData.message,
-                lazada_code: orderItemsData.code
-            });
+          const totalRevenue = dayTotals.storeRevenue + dayTotals.productRevenue;
+          const totalOrders = dayTotals.storeOrders + dayTotals.productOrders;
+          const totalUnitsSold = dayTotals.storeUnitSold + dayTotals.productUnitSold;
+          const avgRoi = dayTotals.count > 0 ? dayTotals.roiSum / dayTotals.count : 0;
+          const avgCtr = dayTotals.count > 0 ? dayTotals.ctrSum / dayTotals.count : 0;
+          const avgCpc = dayTotals.count > 0 ? dayTotals.cpcSum / dayTotals.count : 0;
+          
+          return {
+            date: date,
+            spend: dayTotals.spend,
+            revenue: totalRevenue,
+            orders: totalOrders,
+            unitsSold: totalUnitsSold,
+            roi: avgRoi,
+            impressions: dayTotals.impressions,
+            clicks: dayTotals.clicks,
+            ctr: avgCtr,
+            cpc: avgCpc
+          };
         }
-
-        res.json(orderItemsData);
-    } catch (error) {
-        console.error('Order items error:', error);
-        res.status(500).json({
-            error: 'Failed to get order items',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get items for multiple orders
-app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
-    try {
-        const { orderIds } = req.body;
-
-        if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
-            return res.status(400).json({
-                error: 'orderIds array is required',
-                message: 'Please provide an array of order IDs'
-            });
-        }
-
-        console.log(`Fetching items for ${orderIds.length} orders`);
-        const orderItemsData = await lazadaAuth.getMultipleOrderItems(
-            req.accessToken,
-            orderIds
-        );
-
-        if (orderItemsData.code !== '0' && orderItemsData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to get multiple order items',
-                details: orderItemsData.message,
-                lazada_code: orderItemsData.code
-            });
-        }
-
-        res.json(orderItemsData);
-    } catch (error) {
-        console.error('Multiple order items error:', error);
-        res.status(500).json({
-            error: 'Failed to get multiple order items',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// ============================================
-// SPONSOR SOLUTIONS - REPORT ENDPOINTS
-// ============================================
-
-// Get report overview
-app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, async (req, res) => {
-    try {
-        const {
-            startDate,
-            endDate,
-            dimensions,
-            metrics,
-            currencyType
-        } = req.query;
-
-        console.log('\n' + '='.repeat(60));
-        console.log('REPORT OVERVIEW API REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params received:', req.query);
-
-        if (!startDate || !endDate) {
-            return res.status(400).json({
-                error: 'Missing required parameters',
-                details: 'Both startDate and endDate are required (format: YYYY-MM-DD)',
-                received: { startDate, endDate }
-            });
-        }
-
-        // Calculate previous period dates (same duration as selected period)
-        const start = new Date(startDate);
-        const end = new Date(endDate);
-        const duration = Math.ceil((end - start) / (1000 * 60 * 60 * 24)); // days
         
-        const lastEnd = new Date(start);
-        lastEnd.setDate(lastEnd.getDate() - 1); // day before start
-        
-        const lastStart = new Date(lastEnd);
-        lastStart.setDate(lastStart.getDate() - duration);
+        return null;
+      });
 
-        // Format dates as YYYY-MM-DD
-        const formatDate = (date) => date.toISOString().split('T')[0];
+      const dailyResults = await Promise.all(dailyDataPromises);
+      const timeline = dailyResults.filter(d => d !== null);
 
-        // Lazada API requires BOTH current and previous period dates
-        const params = {
-            startDate: startDate.trim(),
-            endDate: endDate.trim(),
-            lastStartDate: formatDate(lastStart),
-            lastEndDate: formatDate(lastEnd),
-            bizCode: 'sponsoredSearch',
-            useRtTable: 'false'
-        };
+      const totalMetrics = timeline.reduce((acc, day) => ({
+        spend: acc.spend + day.spend,
+        revenue: acc.revenue + day.revenue,
+        orders: acc.orders + day.orders,
+        unitsSold: acc.unitsSold + day.unitsSold,
+        roi: acc.roi + day.roi,
+        impressions: acc.impressions + day.impressions,
+        clicks: acc.clicks + day.clicks,
+        ctr: acc.ctr + day.ctr,
+        cpc: acc.cpc + day.cpc
+      }), {
+        spend: 0,
+        revenue: 0,
+        orders: 0,
+        unitsSold: 0,
+        roi: 0,
+        impressions: 0,
+        clicks: 0,
+        ctr: 0,
+        cpc: 0
+      });
 
-        // Add optional parameters
-        if (dimensions) params.dimensions = dimensions;
-        if (metrics) params.metrics = metrics;
-        if (currencyType) params.currencyType = currencyType;
+      const avgMetrics = {
+        ...totalMetrics,
+        roi: timeline.length > 0 ? totalMetrics.roi / timeline.length : 0,
+        ctr: timeline.length > 0 ? totalMetrics.ctr / timeline.length : 0,
+        cpc: timeline.length > 0 ? totalMetrics.cpc / timeline.length : 0,
+        spendChange: 0,
+        revenueChange: 0,
+        ordersChange: 0,
+        unitsSoldChange: 0,
+        roiChange: 0
+      };
 
-        console.log('✅ Params for Lazada API (comparing two periods):');
-        console.log('   Current Period:');
-        console.log('     startDate:', params.startDate);
-        console.log('     endDate:', params.endDate);
-        console.log('   Previous Period (for comparison):');
-        console.log('     lastStartDate:', params.lastStartDate);
-        console.log('     lastEndDate:', params.lastEndDate);
-        console.log('   Other params:');
-        console.log('     bizCode:', params.bizCode);
-        console.log('     useRtTable:', params.useRtTable);
-        if (dimensions) console.log('   dimensions:', dimensions);
-        if (metrics) console.log('   metrics:', metrics);
-        if (currencyType) console.log('   currencyType:', currencyType);
+      return { 
+        parsed: avgMetrics,
+        timeline: timeline,
+        rawResponse: {
+          account_name: account.account,
+          account_country: account.country,
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          fullResponse: { message: `Fetched ${timeline.length} days of data` }
+        }
+      };
+    } catch (err) {
+      return { 
+        parsed: null,
+        timeline: [],
+        rawResponse: {
+          account_name: account.account,
+          account_country: account.country,
+          status: 'error',
+          statusText: err.message,
+          headers: {},
+          fullResponse: { error: err.message }
+        }
+      };
+    }
+  };
 
-        console.log('\n📤 Calling Lazada API with GET method');
-        
-        const reportData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/report/getReportOverview',
-            req.accessToken,
-            params,
-            'GET'
-        );
+  const handleDownloadCSV = () => {
+    const filteredData = selectedAccount === 'all' 
+      ? metricsData 
+      : metricsData.filter(m => m.account_id === selectedAccount);
 
-        console.log('\n📥 Response received:');
-        console.log('   Code:', reportData.code);
-        console.log('   Message:', reportData.message);
+    if (filteredData.length === 0) {
+      alert('No data available to download');
+      return;
+    }
 
-        if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('\n❌ API returned error:');
-            console.error('   Code:', reportData.code);
-            console.error('   Message:', reportData.message);
-            console.error('   Type:', reportData.type);
-            console.error('   Request ID:', reportData.request_id);
-            console.log('='.repeat(60) + '\n');
+    let headers = [];
+    let rows = [];
+
+    if (selectedCampaign === 'overview') {
+      headers = ['Date', 'Spend', 'Revenue', 'Orders', 'ROAS', 'Impressions', 'Clicks', 'Units Sold', 'CTR', 'CPC'];
+
+      const dateMap = {};
+      
+      filteredData.forEach(metric => {
+        if (metric.timeline && Array.isArray(metric.timeline)) {
+          metric.timeline.forEach(timelineItem => {
+            const date = timelineItem.date;
             
-            return res.status(400).json({
-                error: 'Lazada API Error',
-                code: reportData.code,
-                message: reportData.message,
-                type: reportData.type,
-                request_id: reportData.request_id,
-                params_sent: params
-            });
-        }
-
-        console.log('✅ SUCCESS - Report data retrieved');
-        console.log('='.repeat(60) + '\n');
-        
-        res.json(reportData);
-    } catch (error) {
-        console.error('\n❌ EXCEPTION CAUGHT:');
-        console.error('   Message:', error.message);
-        console.error('   Response status:', error.response?.status);
-        console.error('   Response data:', error.response?.data);
-        console.log('='.repeat(60) + '\n');
-        
-        res.status(500).json({
-            error: 'Request failed',
-            message: error.message,
-            details: error.response?.data,
-            status: error.response?.status
-        });
-    }
-});
-
-// Get campaign list
-app.get('/api/lazada/sponsor/solutions/campaign/getCampaignList', verifyToken, async (req, res) => {
-    try {
-        const { pageNo = '1', pageSize = '100' } = req.query;
-
-        console.log('\n' + '='.repeat(60));
-        console.log('GET CAMPAIGN LIST REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { pageNo, pageSize });
-
-        const params = {
-            pageNo,
-            pageSize
-        };
-
-        const campaignData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/campaign/getCampaignList',
-            req.accessToken,
-            params,
-            'GET'
-        );
-
-        console.log('Response code:', campaignData.code);
-        console.log('Campaigns found:', campaignData.result?.campaigns?.length || 0);
-        console.log('='.repeat(60) + '\n');
-
-        if (campaignData.code !== '0' && campaignData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to get campaign list',
-                code: campaignData.code,
-                message: campaignData.message
-            });
-        }
-
-        res.json(campaignData);
-    } catch (error) {
-        console.error('Campaign list error:', error);
-        res.status(500).json({
-            error: 'Failed to get campaign list',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get discovery report by adgroup
-app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verifyToken, async (req, res) => {
-    try {
-        const {
-            campaignId,
-            startDate,
-            endDate,
-            pageNo = '1',
-            pageSize = '1000'
-        } = req.query;
-
-        console.log('\n' + '='.repeat(60));
-        console.log('GET DISCOVERY REPORT ADGROUP REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { campaignId, startDate, endDate, pageNo, pageSize });
-
-        if (!campaignId || !startDate || !endDate) {
-            return res.status(400).json({
-                error: 'Missing required parameters',
-                details: 'campaignId, startDate, and endDate are required'
-            });
-        }
-
-        const params = {
-            campaignId,
-            startDate,
-            endDate,
-            pageNo,
-            pageSize
-        };
-
-        const reportData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/report/getDiscoveryReportAdgroup',
-            req.accessToken,
-            params,
-            'GET'
-        );
-
-        console.log('Response code:', reportData.code);
-        console.log('Reports found:', reportData.result?.result?.length || 0);
-        console.log('='.repeat(60) + '\n');
-
-        if (reportData.code !== '0' && reportData.code !== 0) {
-            return res.status(400).json({
-                error: 'Failed to get discovery report',
-                code: reportData.code,
-                message: reportData.message
-            });
-        }
-
-        res.json(reportData);
-    } catch (error) {
-        console.error('Discovery report error:', error);
-        res.status(500).json({
-            error: 'Failed to get discovery report',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-// Get campaign report on pre-placement
-app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', verifyToken, async (req, res) => {
-    try {
-        const {
-            campaignId,
-            campaignName,
-            startDate,
-            endDate,
-            productType = 'ALL',
-            sort = 'impressions',
-            order = 'DESC',
-            pageNo = '1',
-            pageSize = '100',
-            useRtTable = 'true'
-        } = req.query;
-
-        console.log('\n' + '='.repeat(60));
-        console.log('GET CAMPAIGN REPORT ON PRE-PLACEMENT REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { 
-            campaignId, 
-            campaignName, 
-            startDate, 
-            endDate, 
-            productType,
-            sort,
-            order,
-            pageNo, 
-            pageSize,
-            useRtTable 
-        });
-
-        if (!startDate || !endDate) {
-            return res.status(400).json({
-                error: 'Missing required parameters',
-                details: 'startDate and endDate are required (format: YYYY-MM-DD)'
-            });
-        }
-
-        const params = {
-            startDate,
-            endDate,
-            productType,
-            sort,
-            order,
-            pageNo,
-            pageSize,
-            useRtTable
-        };
-
-        // Add optional parameters
-        if (campaignId) params.campaignId = campaignId;
-        if (campaignName) params.campaignName = campaignName;
-
-        console.log('✅ Params for Lazada API:');
-        Object.entries(params).forEach(([key, value]) => {
-            console.log(`   ${key}:`, value);
-        });
-
-        console.log('\n📤 Calling Lazada API with GET method');
-        
-        const reportData = await lazadaAuth.makeRequest(
-            '/sponsor/solutions/report/getReportCampaignOnPrePlacement',
-            req.accessToken,
-            params,
-            'GET'
-        );
-
-        console.log('\n📥 Response received:');
-        console.log('   Code:', reportData.code);
-        console.log('   Message:', reportData.message);
-        console.log('   Records found:', reportData.result?.result?.length || 0);
-        console.log('   Total count:', reportData.result?.totalCount || 0);
-
-        if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('\n❌ API returned error:');
-            console.error('   Code:', reportData.code);
-            console.error('   Message:', reportData.message);
-            console.log('='.repeat(60) + '\n');
+            if (!dateMap[date]) {
+              dateMap[date] = { spend: 0, revenue: 0, orders: 0, roi: 0, impressions: 0, clicks: 0, unitsSold: 0, ctr: 0, cpc: 0, count: 0 };
+            }
             
-            return res.status(400).json({
-                error: 'Lazada API Error',
-                code: reportData.code,
-                message: reportData.message,
-                request_id: reportData.request_id,
-                params_sent: params
-            });
+            dateMap[date].spend += timelineItem.spend || 0;
+            dateMap[date].revenue += timelineItem.revenue || 0;
+            dateMap[date].orders += timelineItem.orders || 0;
+            dateMap[date].roi += timelineItem.roi || 0;
+            dateMap[date].impressions += timelineItem.impressions || 0;
+            dateMap[date].clicks += timelineItem.clicks || 0;
+            dateMap[date].unitsSold += timelineItem.unitsSold || 0;
+            dateMap[date].ctr += timelineItem.ctr || 0;
+            dateMap[date].cpc += timelineItem.cpc || 0;
+            dateMap[date].count += 1;
+          });
         }
+      });
 
-        console.log('✅ SUCCESS - Campaign pre-placement report retrieved');
-        console.log('='.repeat(60) + '\n');
+      rows = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b)).map(date => {
+        const data = dateMap[date];
+        const count = data.count;
+        const avgRoi = count > 0 ? data.roi / count : 0;
+        const avgCtr = count > 0 ? data.ctr / count : 0;
+        const avgCpc = count > 0 ? data.cpc / count : 0;
         
-        res.json(reportData);
-    } catch (error) {
-        console.error('\n❌ EXCEPTION CAUGHT:');
-        console.error('   Message:', error.message);
-        console.error('   Response status:', error.response?.status);
-        console.error('   Response data:', error.response?.data);
-        console.log('='.repeat(60) + '\n');
-        
-        res.status(500).json({
-            error: 'Request failed',
-            message: error.message,
-            details: error.response?.data,
-            status: error.response?.status
-        });
+        return [date, data.spend.toFixed(2), data.revenue.toFixed(2), data.orders, avgRoi.toFixed(2), data.impressions, data.clicks, data.unitsSold, (avgCtr).toFixed(2) + '%', avgCpc.toFixed(2)];
+      });
+    } else {
+      headers = ['Campaign Name', 'Product Type', 'Campaign Type', 'Spend', 'Store Revenue', 'Product Revenue', 'Store ROAS', 'Store Orders', 'Product Orders', 'Store Units', 'Product Units', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Store CVR', 'Product CVR', 'Store A2C', 'Product A2C', 'Day Budget'];
+
+      rows = filteredData.map(metric => [
+        metric.campaignName || '', metric.productType || '', metric.campaignType || '', metric.spend.toFixed(2), metric.storeRevenue.toFixed(2), metric.productRevenue.toFixed(2), metric.roi.toFixed(2), metric.storeOrders, metric.productOrders, metric.storeUnitSold, metric.productUnitSold, metric.impressions, metric.clicks, metric.ctr.toFixed(2) + '%', metric.cpc.toFixed(2), (metric.storeCvr * 100).toFixed(2) + '%', (metric.productCvr * 100).toFixed(2) + '%', metric.storeA2c, metric.productA2c, metric.dayBudget.toFixed(2)
+      ]);
     }
-});
-// ============================================
-// ERROR HANDLING
-// ============================================
 
-app.use((req, res) => {
-    res.status(404).json({
-        error: 'Endpoint not found',
-        path: req.path,
-        method: req.method
-    });
-});
+    const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const campaignName = selectedCampaign !== 'overview' ? campaigns.find(c => c.campaignId === selectedCampaign)?.campaignName || selectedCampaign : 'overview';
+    const fileName = selectedAccount === 'all' ? `all_accounts_${campaignName}_${dateRange.startDate}_to_${dateRange.endDate}.csv` : `${selectedAccount}_${campaignName}_${dateRange.startDate}_to_${dateRange.endDate}.csv`;
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', fileName);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
-app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({
-        error: 'Internal server error',
-        message: err.message,
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-    });
-});
+  const handleRefresh = () => {
+    if (selectedCampaign === 'overview') {
+      fetchAllAccountsReports(accounts);
+    } else {
+      fetchCampaignPrePlacementData();
+    }
+  };
 
-// ============================================
-// START SERVER
-// ============================================
+  const handleDateChange = (field, value) => {
+    setDateRange(prev => ({ ...prev, [field]: value }));
+  };
 
-app.listen(PORT, () => {
-    console.log('='.repeat(60));
-    console.log(`✅ Server running on http://localhost:${PORT}`);
-    console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔑 Lazada App Key: ${process.env.LAZADA_APP_KEY ? '✓ Set' : '✗ Missing'}`);
-    console.log(`🔐 Lazada App Secret: ${process.env.LAZADA_APP_SECRET ? '✓ Set' : '✗ Missing'}`);
-    console.log(`🌐 Lazada API URL: ${process.env.LAZADA_API_URL || 'Not set'}`);
-    console.log('='.repeat(60));
-    console.log('\n📋 Available endpoints:');
-    console.log('  GET  /health');
-    console.log('  GET  /api/test');
-    console.log('\n🔐 Authentication:');
-    console.log('  GET  /api/lazada/auth-url');
-    console.log('  POST /api/lazada/token');
-    console.log('  POST /api/lazada/refresh-token');
-    console.log('\n📦 Lazada API (require auth token):');
-    console.log('  GET  /api/lazada/seller');
-    console.log('  GET  /api/lazada/seller/policy');
-    console.log('  GET  /api/lazada/products');
-    console.log('  GET  /api/lazada/orders');
-    console.log('  GET  /api/lazada/order/:orderId');
-    console.log('  GET  /api/lazada/order/:orderId/items');
-    console.log('  POST /api/lazada/orders/items');
-    console.log('\n📊 Sponsor Solutions:');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/getReportOverview');
-    console.log('  GET  /api/lazada/sponsor/solutions/campaign/getCampaignList');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup');
-    console.log('='.repeat(60));
-});
+  const calculateTotals = () => {
+    const filteredData = selectedAccount === 'all' ? metricsData : metricsData.filter(m => m.account_id === selectedAccount);
+
+    if (filteredData.length === 0) {
+      return { totalSpend: 0, totalRevenue: 0, totalOrders: 0, totalUnitsSold: 0, totalImpressions: 0, totalClicks: 0, avgROI: 0, avgCTR: 0, avgCPC: 0, avgSpendChange: 0, avgRevenueChange: 0, avgOrdersChange: 0, avgUnitsSoldChange: 0, avgROIChange: 0 };
+    }
+
+    const totals = filteredData.reduce((acc, curr) => ({
+      totalSpend: acc.totalSpend + (curr.spend || 0),
+      totalRevenue: acc.totalRevenue + (curr.revenue || curr.storeRevenue || 0),
+      totalOrders: acc.totalOrders + (curr.orders || curr.storeOrders || 0),
+      totalUnitsSold: acc.totalUnitsSold + (curr.unitsSold || curr.storeUnitSold || 0),
+      totalImpressions: acc.totalImpressions + (curr.impressions || 0),
+      totalClicks: acc.totalClicks + (curr.clicks || 0),
+      avgROI: acc.avgROI + (curr.roi || 0),
+      avgCTR: acc.avgCTR + (curr.ctr || 0),
+      avgCPC: acc.avgCPC + (curr.cpc || 0),
+      avgSpendChange: acc.avgSpendChange + (curr.spendChange || 0),
+      avgRevenueChange: acc.avgRevenueChange + (curr.revenueChange || 0),
+      avgOrdersChange: acc.avgOrdersChange + (curr.ordersChange || 0),
+      avgUnitsSoldChange: acc.avgUnitsSoldChange + (curr.unitsSoldChange || 0),
+      avgROIChange: acc.avgROIChange + (curr.roiChange || 0)
+    }), { totalSpend: 0, totalRevenue: 0, totalOrders: 0, totalUnitsSold: 0, totalImpressions: 0, totalClicks: 0, avgROI: 0, avgCTR: 0, avgCPC: 0, avgSpendChange: 0, avgRevenueChange: 0, avgOrdersChange: 0, avgUnitsSoldChange: 0, avgROIChange: 0 });
+
+    const count = filteredData.length;
+    return { ...totals, avgROI: totals.avgROI / count, avgCTR: totals.avgCTR / count, avgCPC: totals.avgCPC / count, avgSpendChange: totals.avgSpendChange / count, avgRevenueChange: totals.avgRevenueChange / count, avgOrdersChange: totals.avgOrdersChange / count, avgUnitsSoldChange: totals.avgUnitsSoldChange / count, avgROIChange: totals.avgROIChange / count };
+  };
+
+  const totals = calculateTotals();
+
+  const MetricBox = ({ label, value, change, color = 'blue', isCurrency = false }) => {
+    const isPositive = change >= 0;
+    const changeColor = isPositive ? 'text-green-600' : 'text-red-600';
+    
+    return (
+      <div className="flex flex-col border-r border-gray-200 last:border-r-0 px-6 py-2">
+        <div className="flex items-center gap-1 mb-1">
+          <span className={`text-xs font-medium text-${color}-600`}>{label}</span>
+          <Info size={12} className="text-gray-400" />
+        </div>
+        <div className={`text-2xl font-bold text-${color}-600 mb-1`}>
+          {isCurrency && 'PHP '}
+          {value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-gray-500">vs Previous Period</span>
+          <span className={`${changeColor} font-medium`}>
+            {isPositive ? '+' : ''}{change.toFixed(2)}%{isPositive ? '▲' : '▼'}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto bg-white min-h-screen">
+      <div className="border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between mb-3">
+          <h1 className="text-xl font-semibold text-gray-900">
+            {selectedCampaign === 'overview' ? 'Overview' : 'Campaign Performance Report'}
+          </h1>
+          
+          <div className="flex gap-3 items-center">
+            <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded">
+              <Calendar size={16} className="text-gray-500" />
+              <input type="date" value={dateRange.startDate} onChange={(e) => handleDateChange('startDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
+              <span className="text-gray-500">-</span>
+              <input type="date" value={dateRange.endDate} onChange={(e) => handleDateChange('endDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
+            </div>
+
+            <button onClick={handleRefresh} disabled={loading} className="px-3 py-2 text-gray-700 hover:bg-gray-100 rounded transition-colors">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+
+            <button onClick={handleDownloadCSV} disabled={metricsData.length === 0} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+              <Download size={16} />Download
+            </button>
+
+            <button onClick={() => setShowRawData(!showRawData)} className="px-4 py-2 bg-gray-600 text-white rounded text-sm hover:bg-gray-700">
+              {showRawData ? 'Hide' : 'Show'} Raw
+            </button>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3 pt-3 border-t border-gray-100">
+          <label className="text-sm font-medium text-gray-700">Account:</label>
+          <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px]">
+            <option value="all">All Accounts</option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>{account.account} ({account.country})</option>
+            ))}
+          </select>
+
+          {selectedAccount !== 'all' && (
+            <>
+              <label className="text-sm font-medium text-gray-700 ml-4">Campaign:</label>
+              <select value={selectedCampaign} onChange={(e) => setSelectedCampaign(e.target.value)} disabled={loadingCampaigns || campaigns.length === 0} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50">
+                <option value="overview">Overview (All Campaigns)</option>
+                {campaigns.map((campaign) => (
+                  <option key={campaign.campaignId} value={campaign.campaignId}>{campaign.campaignName || campaign.campaignId}</option>
+                ))}
+              </select>
+              {loadingCampaigns && <span className="text-xs text-gray-500">Loading campaigns...</span>}
+            </>
+          )}
+
+          <span className="text-sm text-gray-500 ml-auto">
+            {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
+            {campaigns.length > 0 && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
+          </span>
+        </div>
+      </div>
+
+      {error && <div className="mx-6 mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{error}</div>}
+
+      {showRawData && Object.keys(rawResponses).length > 0 && (
+        <div className="mx-6 mt-4 bg-gray-900 text-green-400 rounded p-4 overflow-auto max-h-96">
+          {Object.entries(rawResponses).map(([accountId, data]) => (
+            <div key={accountId} className="mb-4">
+              <div className="text-yellow-400 font-semibold mb-2">{data.account_name || accountId} ({data.account_country || 'N/A'})</div>
+              <pre className="text-xs">{JSON.stringify(data.fullResponse || data, null, 2)}</pre>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {loading && metricsData.length === 0 ? (
+        <div className="flex items-center justify-center h-96">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        </div>
+      ) : metricsData.length === 0 ? (
+        <div className="mx-6 mt-8 text-center text-gray-500">No data available for the selected period</div>
+      ) : (
+        <>
+          <div className="border-b border-gray-200">
+            <div className="flex divide-x divide-gray-200">
+              <MetricBox label="Spend" value={totals.totalSpend} change={totals.avgSpendChange} color="blue" isCurrency={true} />
+              <MetricBox label="ROAS" value={totals.avgROI} change={totals.avgROIChange} color="gray" />
+              <MetricBox label="Clicks" value={totals.totalClicks} change={0} color="gray" />
+              <MetricBox label="Impressions" value={totals.totalImpressions} change={0} color="gray" />
+              <MetricBox label="CTR" value={totals.avgCTR} change={0} color="gray" />
+              <MetricBox label="CPC" value={totals.avgCPC} change={0} color="gray" isCurrency={true} />
+              <MetricBox label="Revenue" value={totals.totalRevenue} change={totals.avgRevenueChange} color="gray" isCurrency={true} />
+              <MetricBox label="Orders" value={totals.totalOrders} change={totals.avgOrdersChange} color="gray" />
+            </div>
+          </div>
+
+          {chartData.length > 0 && (
+            <div className="px-6 py-6">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={chartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} angle={selectedCampaign !== 'overview' ? -45 : 0} textAnchor={selectedCampaign !== 'overview' ? 'end' : 'middle'} height={selectedCampaign !== 'overview' ? 100 : 30} tickFormatter={(value) => {
+                    if (selectedCampaign !== 'overview') {
+                      return value.length > 30 ? value.substring(0, 27) + '...' : value;
+                    }
+                    const d = new Date(value);
+                    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+                  }} />
+                  <YAxis yAxisId="left" orientation="left" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
+                  <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
+                  <Tooltip contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.95)', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '12px', padding: '8px 12px' }} formatter={(value, name) => {
+                    if (name === 'Spend') {
+                      return ['PHP ' + parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 'Spend'];
+                    }
+                    if (name === 'ROAS') {
+                      return [parseFloat(value).toFixed(2), 'ROAS'];
+                    }
+                    return [value, name];
+                  }} />
+                  <Legend verticalAlign="bottom" height={36} iconType="line" wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
+                  <Line yAxisId="left" type="monotone" dataKey="Spend" stroke="#60a5fa" strokeWidth={2} dot={selectedCampaign !== 'overview'} activeDot={{ r: 4, fill: '#60a5fa' }} />
+                  <Line yAxisId="right" type="monotone" dataKey="ROAS" stroke="#c084fc" strokeWidth={2} dot={selectedCampaign !== 'overview'} activeDot={{ r: 4, fill: '#c084fc' }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {selectedCampaign !== 'overview' && metricsData.length > 0 && (
+            <div className="px-6 py-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Campaign Performance Details</h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store Rev</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Product Rev</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROAS</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impr</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store CVR</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {metricsData.map((metric, index) => (
+                      <tr key={index} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{metric.campaignName}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{metric.productType}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.productRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                        <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{metric.roi.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.impressions.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.clicks.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.ctr.toFixed(2)}%</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.cpc.toFixed(2)}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{(metric.storeCvr * 100).toFixed(2)}%</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.dayBudget.toFixed(0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
