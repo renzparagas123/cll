@@ -771,6 +771,7 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
 
         console.log('\n📥 Response received:');
         console.log('   Code:', reportData.code);
+        console.log('   Success:', reportData.success);
         console.log('   Message:', reportData.message);
         console.log('   Campaigns found:', reportData.result?.result?.length || 0);
         console.log('   Total count:', reportData.result?.totalCount || 0);
@@ -788,6 +789,16 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
                 request_id: reportData.request_id,
                 params_sent: params
             });
+        }
+
+        // Check if no data returned
+        if (!reportData.result?.result || reportData.result.result.length === 0) {
+            console.warn('\n⚠️ WARNING: API returned success but 0 campaigns');
+            console.warn('   This might mean:');
+            console.warn('   - No campaigns active during this period');
+            console.warn('   - Date format issue');
+            console.warn('   - Account has no Discovery campaigns');
+            console.warn('   - Permissions issue');
         }
 
         console.log('✅ SUCCESS - Discovery report campaign data retrieved');
