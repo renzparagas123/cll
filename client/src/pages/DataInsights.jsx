@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Calendar, Download, RefreshCw, Info } from 'lucide-react';
 import { AccountManager } from '../utils/AccountManager';
+import DataCharts from '../components/DataCharts';
 
 export default function DataInsights({ apiUrl }) {
   const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('overview');
   const [accounts, setAccounts] = useState([]);
   const [metricsData, setMetricsData] = useState([]);
   const [chartData, setChartData] = useState([]);
@@ -220,7 +222,6 @@ export default function DataInsights({ apiUrl }) {
       const allCampaigns = [];
       const allRawResponses = {};
       
-      // Create date list for the range
       const start = new Date(dateRange.startDate);
       const end = new Date(dateRange.endDate);
       const dateList = [];
@@ -230,7 +231,6 @@ export default function DataInsights({ apiUrl }) {
       }
       
       for (const account of accountsList) {
-        // Fetch campaign data for EACH DATE separately
         for (const date of dateList) {
           const params = new URLSearchParams({
             startDate: date,
@@ -257,10 +257,9 @@ export default function DataInsights({ apiUrl }) {
             
             console.log(`${date} - ${account.account}: Found ${campaigns.length} campaigns`);
             
-            // Add each campaign as a separate row with the date
             campaigns.forEach(campaign => {
               allCampaigns.push({
-                date: date, // Add date to each row
+                date: date,
                 account_id: account.id,
                 account_name: account.account,
                 account_country: account.country,
@@ -300,7 +299,6 @@ export default function DataInsights({ apiUrl }) {
         }
       }
       
-      // Sort by date (newest first) then by campaign name
       allCampaigns.sort((a, b) => {
         const dateCompare = new Date(b.date) - new Date(a.date);
         if (dateCompare !== 0) return dateCompare;
@@ -309,8 +307,6 @@ export default function DataInsights({ apiUrl }) {
       
       setMetricsData(allCampaigns);
       setRawResponses(allRawResponses);
-      
-      // Don't update chart for campaign list view
       setChartData([]);
     } catch (err) {
       setError('Failed to fetch campaign data');
@@ -417,7 +413,6 @@ export default function DataInsights({ apiUrl }) {
             };
           }
           
-          // Aggregate all campaigns for this day
           const dayTotals = campaigns.reduce((acc, campaign) => {
             console.log(`  - ${campaign.campaignName} (Type: ${campaign.campaignType}): orders=${campaign.storeOrders}, units=${campaign.storeUnitSold}`);
             
@@ -554,11 +549,10 @@ export default function DataInsights({ apiUrl }) {
     let rows = [];
 
     if (selectedCampaign === 'overview') {
-      // Campaign list format (new table) - one row per campaign per date
       headers = ['Date', 'Campaign Name', 'Budget', 'Spend', 'Revenue', 'Orders', 'ROI', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Units Sold'];
       
       rows = filteredData.map(campaign => [
-        campaign.date, // Show actual date, not range
+        campaign.date,
         campaign.campaignName || '',
         campaign.dayBudget.toFixed(0),
         campaign.spend.toFixed(2),
@@ -616,7 +610,6 @@ export default function DataInsights({ apiUrl }) {
 
     console.log('📊 Calculating totals from', filteredData.length, 'rows');
 
-    // Group by date first to avoid double-counting orders from multiple campaigns
     const dailyTotals = {};
     
     filteredData.forEach(campaign => {
@@ -644,12 +637,10 @@ export default function DataInsights({ apiUrl }) {
       dailyTotals[date].campaigns.push(campaign.campaignName);
     });
 
-    // Log daily totals to see if orders match Seller Center
     Object.entries(dailyTotals).sort().forEach(([date, data]) => {
       console.log(`  ${date}: ${data.orders} orders (from ${data.campaigns.length} campaigns: ${data.campaigns.join(', ')})`);
     });
 
-    // Sum across all days
     const totals = Object.values(dailyTotals).reduce((acc, day) => ({
       totalSpend: acc.totalSpend + day.spend,
       totalRevenue: acc.totalRevenue + day.revenue,
@@ -671,7 +662,6 @@ export default function DataInsights({ apiUrl }) {
     console.log('✅ TOTALS:', totals);
     console.log('⚠️ Note: If orders dont match Seller Center, it means campaigns share order attribution');
 
-    // Calculate averages from totals
     const avgCTR = totals.totalImpressions > 0 ? (totals.totalClicks / totals.totalImpressions) * 100 : 0;
     const avgCPC = totals.totalClicks > 0 ? totals.totalSpend / totals.totalClicks : 0;
     const avgROI = totals.totalSpend > 0 ? totals.totalRevenue / totals.totalSpend : 0;
@@ -726,216 +716,268 @@ export default function DataInsights({ apiUrl }) {
   return (
     <div className="max-w-7xl mx-auto bg-white min-h-screen">
       <div className="border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between mb-3">
-          <h1 className="text-xl font-semibold text-gray-900">
-            {selectedCampaign === 'overview' ? 'Overview' : 'Campaign Performance Report'}
-          </h1>
-          
-          <div className="flex gap-3 items-center">
-            <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded">
-              <Calendar size={16} className="text-gray-500" />
-              <input type="date" value={dateRange.startDate} onChange={(e) => handleDateChange('startDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
-              <span className="text-gray-500">-</span>
-              <input type="date" value={dateRange.endDate} onChange={(e) => handleDateChange('endDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
-            </div>
-
-            <button onClick={handleRefresh} disabled={loading} className="px-3 py-2 text-gray-700 hover:bg-gray-100 rounded transition-colors">
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-
-            <button onClick={handleDownloadCSV} disabled={metricsData.length === 0} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
-              <Download size={16} />Download
-            </button>
-
-            <button onClick={() => setShowRawData(!showRawData)} className="px-4 py-2 bg-gray-600 text-white rounded text-sm hover:bg-gray-700">
-              {showRawData ? 'Hide' : 'Show'} Raw
-            </button>
-          </div>
+        {/* Tab Navigation */}
+        <div className="flex gap-1 mb-4 border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`px-6 py-2 text-sm font-medium transition-colors relative ${
+              activeTab === 'overview'
+                ? 'text-blue-600'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Overview
+            {activeTab === 'overview' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600"></div>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('data-charts')}
+            className={`px-6 py-2 text-sm font-medium transition-colors relative ${
+              activeTab === 'data-charts'
+                ? 'text-blue-600'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Data Charts
+            {activeTab === 'data-charts' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600"></div>
+            )}
+          </button>
         </div>
-        
-        <div className="flex items-center gap-3 pt-3 border-t border-gray-100">
-          <label className="text-sm font-medium text-gray-700">Account:</label>
-          <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px]">
-            <option value="all">All Accounts</option>
-            {accounts.map((account) => (
-              <option key={account.id} value={account.id}>{account.account} ({account.country})</option>
-            ))}
-          </select>
 
-          {selectedAccount !== 'all' && (
-            <>
-              <label className="text-sm font-medium text-gray-700 ml-4">Campaign:</label>
-              <select value={selectedCampaign} onChange={(e) => setSelectedCampaign(e.target.value)} disabled={loadingCampaigns || campaigns.length === 0} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50">
-                <option value="overview">Overview (All Campaigns)</option>
-                {campaigns.map((campaign) => (
-                  <option key={campaign.campaignId} value={campaign.campaignId}>{campaign.campaignName || campaign.campaignId}</option>
+        {/* Controls - Only show on Overview tab */}
+        {activeTab === 'overview' && (
+          <>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-medium text-gray-900">
+                {selectedCampaign === 'overview' ? 'Overview' : 'Campaign Performance Report'}
+              </h2>
+              
+              <div className="flex gap-3 items-center">
+                <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded">
+                  <Calendar size={16} className="text-gray-500" />
+                  <input type="date" value={dateRange.startDate} onChange={(e) => handleDateChange('startDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
+                  <span className="text-gray-500">-</span>
+                  <input type="date" value={dateRange.endDate} onChange={(e) => handleDateChange('endDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
+                </div>
+
+                <button onClick={handleRefresh} disabled={loading} className="px-3 py-2 text-gray-700 hover:bg-gray-100 rounded transition-colors">
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                </button>
+
+                <button onClick={handleDownloadCSV} disabled={metricsData.length === 0} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <Download size={16} />Download
+                </button>
+
+                <button onClick={() => setShowRawData(!showRawData)} className="px-4 py-2 bg-gray-600 text-white rounded text-sm hover:bg-gray-700">
+                  {showRawData ? 'Hide' : 'Show'} Raw
+                </button>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-3 pt-3 border-t border-gray-100">
+              <label className="text-sm font-medium text-gray-700">Account:</label>
+              <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px]">
+                <option value="all">All Accounts</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>{account.account} ({account.country})</option>
                 ))}
               </select>
-              {loadingCampaigns && <span className="text-xs text-gray-500">Loading campaigns...</span>}
-            </>
-          )}
 
-          <span className="text-sm text-gray-500 ml-auto">
-            {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
-            {campaigns.length > 0 && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
-          </span>
-        </div>
+              {selectedAccount !== 'all' && (
+                <>
+                  <label className="text-sm font-medium text-gray-700 ml-4">Campaign:</label>
+                  <select value={selectedCampaign} onChange={(e) => setSelectedCampaign(e.target.value)} disabled={loadingCampaigns || campaigns.length === 0} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50">
+                    <option value="overview">Overview (All Campaigns)</option>
+                    {campaigns.map((campaign) => (
+                      <option key={campaign.campaignId} value={campaign.campaignId}>{campaign.campaignName || campaign.campaignId}</option>
+                    ))}
+                  </select>
+                  {loadingCampaigns && <span className="text-xs text-gray-500">Loading campaigns...</span>}
+                </>
+              )}
+
+              <span className="text-sm text-gray-500 ml-auto">
+                {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
+                {campaigns.length > 0 && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
-      {error && <div className="mx-6 mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{error}</div>}
+      {/* Tab Content */}
+      {activeTab === 'overview' && (
+        <>
+          {error && <div className="mx-6 mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{error}</div>}
 
-      {showRawData && Object.keys(rawResponses).length > 0 && (
-        <div className="mx-6 mt-4 bg-gray-900 text-green-400 rounded p-4 overflow-auto max-h-96">
-          {Object.entries(rawResponses).map(([accountId, data]) => (
-            <div key={accountId} className="mb-4">
-              <div className="text-yellow-400 font-semibold mb-2">{data.account_name || accountId} ({data.account_country || 'N/A'})</div>
-              <pre className="text-xs">{JSON.stringify(data.fullResponse || data, null, 2)}</pre>
+          {showRawData && Object.keys(rawResponses).length > 0 && (
+            <div className="mx-6 mt-4 bg-gray-900 text-green-400 rounded p-4 overflow-auto max-h-96">
+              {Object.entries(rawResponses).map(([accountId, data]) => (
+                <div key={accountId} className="mb-4">
+                  <div className="text-yellow-400 font-semibold mb-2">{data.account_name || accountId} ({data.account_country || 'N/A'})</div>
+                  <pre className="text-xs">{JSON.stringify(data.fullResponse || data, null, 2)}</pre>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+
+          {loading && metricsData.length === 0 ? (
+            <div className="flex items-center justify-center h-96">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+            </div>
+          ) : metricsData.length === 0 ? (
+            <div className="mx-6 mt-8 text-center text-gray-500">No data available for the selected period</div>
+          ) : (
+            <>
+              <div className="border-b border-gray-200">
+                <div className="flex divide-x divide-gray-200">
+                  <MetricBox label="Spend" value={totals.totalSpend} change={totals.avgSpendChange} color="blue" isCurrency={true} />
+                  <MetricBox label="ROAS" value={totals.avgROI} change={totals.avgROIChange} color="gray" />
+                  <MetricBox label="Clicks" value={totals.totalClicks} change={0} color="gray" />
+                  <MetricBox label="Impressions" value={totals.totalImpressions} change={0} color="gray" />
+                  <MetricBox label="CTR" value={totals.avgCTR} change={0} color="gray" />
+                  <MetricBox label="CPC" value={totals.avgCPC} change={0} color="gray" isCurrency={true} />
+                  <MetricBox label="Revenue" value={totals.totalRevenue} change={totals.avgRevenueChange} color="gray" isCurrency={true} />
+                  <MetricBox label="Orders" value={totals.totalOrders} change={totals.avgOrdersChange} color="gray" />
+                </div>
+              </div>
+
+              {chartData.length > 0 && selectedCampaign !== 'overview' && (
+                <div className="px-6 py-6">
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={chartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} angle={-45} textAnchor="end" height={100} tickFormatter={(value) => {
+                        return value.length > 30 ? value.substring(0, 27) + '...' : value;
+                      }} />
+                      <YAxis yAxisId="left" orientation="left" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
+                      <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
+                      <Tooltip contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.95)', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '12px', padding: '8px 12px' }} formatter={(value, name) => {
+                        if (name === 'Spend') {
+                          return ['PHP ' + parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 'Spend'];
+                        }
+                        if (name === 'ROAS') {
+                          return [parseFloat(value).toFixed(2), 'ROAS'];
+                        }
+                        return [value, name];
+                      }} />
+                      <Legend verticalAlign="bottom" height={36} iconType="line" wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
+                      <Line yAxisId="left" type="monotone" dataKey="Spend" stroke="#60a5fa" strokeWidth={2} dot activeDot={{ r: 4, fill: '#60a5fa' }} />
+                      <Line yAxisId="right" type="monotone" dataKey="ROAS" stroke="#c084fc" strokeWidth={2} dot activeDot={{ r: 4, fill: '#c084fc' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {selectedCampaign === 'overview' && metricsData.length > 0 && (
+                <div className="px-6 py-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">All Campaigns by Date</h2>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign Name</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Revenue</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Orders</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROI</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impressions</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Units</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {(selectedAccount === 'all' ? metricsData : metricsData.filter(m => m.account_id === selectedAccount)).map((campaign, index) => (
+                          <tr key={index} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 text-sm text-gray-900 whitespace-nowrap">{campaign.date}</td>
+                            <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
+                              <div className="font-medium">{campaign.campaignName}</div>
+                              {selectedAccount === 'all' && <div className="text-xs text-gray-500">{campaign.account_name}</div>}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.dayBudget.toLocaleString('en-US', { minimumFractionDigits: 0 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{campaign.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900">{campaign.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900 font-medium">{campaign.storeOrders.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{campaign.roi.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.impressions.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.clicks.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.ctr.toFixed(2)}%</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.cpc.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.storeUnitSold.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {selectedCampaign !== 'overview' && metricsData.length > 0 && (
+                <div className="px-6 py-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Campaign Performance Details</h2>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store Rev</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Product Rev</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROAS</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impr</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store CVR</th>
+                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {metricsData.map((metric, index) => (
+                          <tr key={index} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{metric.campaignName}</td>
+                            <td className="px-4 py-3 text-sm text-gray-600">{metric.productType}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.productRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{metric.roi.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.impressions.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.clicks.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.ctr.toFixed(2)}%</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.cpc.toFixed(2)}</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{(metric.storeCvr * 100).toFixed(2)}%</td>
+                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.dayBudget.toFixed(0)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {activeTab === 'new-tab' && (
+        <div className="px-6 py-12 text-center">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-4">New Tab Content</h2>
+          <p className="text-gray-600">This is your new tab between Overview and Data Charts.</p>
+          <p className="text-gray-500 mt-2">Add your custom content here!</p>
         </div>
       )}
 
-      {loading && metricsData.length === 0 ? (
-        <div className="flex items-center justify-center h-96">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      {activeTab === 'data-charts' && (
+        <div className="px-6 py-12 text-center">
+         <DataCharts />
         </div>
-      ) : metricsData.length === 0 ? (
-        <div className="mx-6 mt-8 text-center text-gray-500">No data available for the selected period</div>
-      ) : (
-        <>
-          <div className="border-b border-gray-200">
-            <div className="flex divide-x divide-gray-200">
-              <MetricBox label="Spend" value={totals.totalSpend} change={totals.avgSpendChange} color="blue" isCurrency={true} />
-              <MetricBox label="ROAS" value={totals.avgROI} change={totals.avgROIChange} color="gray" />
-              <MetricBox label="Clicks" value={totals.totalClicks} change={0} color="gray" />
-              <MetricBox label="Impressions" value={totals.totalImpressions} change={0} color="gray" />
-              <MetricBox label="CTR" value={totals.avgCTR} change={0} color="gray" />
-              <MetricBox label="CPC" value={totals.avgCPC} change={0} color="gray" isCurrency={true} />
-              <MetricBox label="Revenue" value={totals.totalRevenue} change={totals.avgRevenueChange} color="gray" isCurrency={true} />
-              <MetricBox label="Orders" value={totals.totalOrders} change={totals.avgOrdersChange} color="gray" />
-            </div>
-          </div>
-
-          {chartData.length > 0 && selectedCampaign !== 'overview' && (
-            <div className="px-6 py-6">
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} angle={-45} textAnchor="end" height={100} tickFormatter={(value) => {
-                    return value.length > 30 ? value.substring(0, 27) + '...' : value;
-                  }} />
-                  <YAxis yAxisId="left" orientation="left" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
-                  <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
-                  <Tooltip contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.95)', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '12px', padding: '8px 12px' }} formatter={(value, name) => {
-                    if (name === 'Spend') {
-                      return ['PHP ' + parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 'Spend'];
-                    }
-                    if (name === 'ROAS') {
-                      return [parseFloat(value).toFixed(2), 'ROAS'];
-                    }
-                    return [value, name];
-                  }} />
-                  <Legend verticalAlign="bottom" height={36} iconType="line" wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="Spend" stroke="#60a5fa" strokeWidth={2} dot activeDot={{ r: 4, fill: '#60a5fa' }} />
-                  <Line yAxisId="right" type="monotone" dataKey="ROAS" stroke="#c084fc" strokeWidth={2} dot activeDot={{ r: 4, fill: '#c084fc' }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Campaign List Table for Overview */}
-          {selectedCampaign === 'overview' && metricsData.length > 0 && (
-            <div className="px-6 py-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">All Campaigns by Date</h2>
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign Name</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Revenue</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Orders</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROI</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impressions</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Units</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {(selectedAccount === 'all' ? metricsData : metricsData.filter(m => m.account_id === selectedAccount)).map((campaign, index) => (
-                      <tr key={index} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900 whitespace-nowrap">{campaign.date}</td>
-                        <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
-                          <div className="font-medium">{campaign.campaignName}</div>
-                          {selectedAccount === 'all' && <div className="text-xs text-gray-500">{campaign.account_name}</div>}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.dayBudget.toLocaleString('en-US', { minimumFractionDigits: 0 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{campaign.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900">{campaign.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900 font-medium">{campaign.storeOrders.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{campaign.roi.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.impressions.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.clicks.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.ctr.toFixed(2)}%</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.cpc.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{campaign.storeUnitSold.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Campaign Detail Table (when specific campaign selected) */}
-          {selectedCampaign !== 'overview' && metricsData.length > 0 && (
-            <div className="px-6 py-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Campaign Performance Details</h2>
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store Rev</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Product Rev</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROAS</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impr</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store CVR</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {metricsData.map((metric, index) => (
-                      <tr key={index} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{metric.campaignName}</td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{metric.productType}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.productRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{metric.roi.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.impressions.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.clicks.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.ctr.toFixed(2)}%</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.cpc.toFixed(2)}</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{(metric.storeCvr * 100).toFixed(2)}%</td>
-                        <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.dayBudget.toFixed(0)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </>
       )}
     </div>
   );
