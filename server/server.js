@@ -2,6 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import LazadaAuth from './utils/lazadaAuth.js';
+import {
+  verifySupabaseToken,
+  saveLazadaAccount,
+  getUserLazadaAccounts,
+  getLazadaAccount,
+  updateLazadaTokens,
+  deleteLazadaAccount,
+  getUserPreferences,
+  setActiveAccount
+} from './utils/supabase.js';
 
 dotenv.config();
 
@@ -35,6 +45,49 @@ app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
     next();
 });
+
+// ============================================
+// MIDDLEWARE - Verify Supabase User Token
+// ============================================
+
+const verifyUser = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: 'Authentication required',
+      message: 'Please provide Authorization header with Bearer token'
+    });
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const user = await verifySupabaseToken(token);
+
+  if (!user) {
+    return res.status(401).json({
+      error: 'Invalid or expired token',
+      message: 'Please login again'
+    });
+  }
+
+  req.user = user;
+  next();
+};
+
+// ============================================
+// MIDDLEWARE - Verify Lazada Access Token (for Lazada API calls)
+// ============================================
+
+const verifyLazadaToken = (req, res, next) => {
+  // Lazada token can come from header or we'll get it from the account
+  const lazadaToken = req.headers['x-lazada-token'];
+  
+  if (lazadaToken) {
+    req.accessToken = lazadaToken;
+  }
+  
+  next();
+};
 
 // ============================================
 // BASIC ENDPOINTS
@@ -81,8 +134,8 @@ app.get('/api/lazada/auth-url', (req, res) => {
     }
 });
 
-// Exchange authorization code for access token
-app.post('/api/lazada/token', async (req, res) => {
+// Exchange authorization code for access token AND save to database
+app.post('/api/lazada/token', verifyUser, async (req, res) => {
     try {
         const { code } = req.body;
 
@@ -104,14 +157,34 @@ app.post('/api/lazada/token', async (req, res) => {
             });
         }
 
-        console.log('Token received successfully');
+        console.log('Token received successfully, saving to database...');
+        
+        // Extract seller_id from country_user_info
+        const sellerId = tokenData.country_user_info?.[0]?.seller_id || tokenData.account;
+        
+        // Save to Supabase database
+        const savedAccount = await saveLazadaAccount(req.user.id, {
+            seller_id: sellerId,
+            account_name: tokenData.account,
+            country: tokenData.country,
+            access_token: tokenData.access_token,
+            refresh_token: tokenData.refresh_token,
+            expires_in: tokenData.expires_in,
+            country_user_info: tokenData.country_user_info,
+            account_platform: tokenData.account_platform
+        });
+
+        console.log('Account saved to database:', savedAccount.id);
+
         res.json({
             success: true,
+            account: savedAccount,
+            // Also return raw token data for backward compatibility
             access_token: tokenData.access_token,
             refresh_token: tokenData.refresh_token,
             expires_in: tokenData.expires_in,
             refresh_expires_in: tokenData.refresh_expires_in,
-            account: tokenData.account,
+            account_name: tokenData.account,
             country: tokenData.country,
             country_user_info: tokenData.country_user_info,
             account_platform: tokenData.account_platform
@@ -126,9 +199,9 @@ app.post('/api/lazada/token', async (req, res) => {
 });
 
 // Refresh access token
-app.post('/api/lazada/refresh-token', async (req, res) => {
+app.post('/api/lazada/refresh-token', verifyUser, async (req, res) => {
     try {
-        const { refreshToken } = req.body;
+        const { refreshToken, accountId } = req.body;
 
         if (!refreshToken) {
             return res.status(400).json({
@@ -145,6 +218,16 @@ app.post('/api/lazada/refresh-token', async (req, res) => {
                 details: tokenData.message,
                 lazada_code: tokenData.code
             });
+        }
+
+        // Update tokens in database if accountId provided
+        if (accountId) {
+            await updateLazadaTokens(req.user.id, accountId, {
+                access_token: tokenData.access_token,
+                refresh_token: tokenData.refresh_token,
+                expires_in: tokenData.expires_in
+            });
+            console.log('Tokens updated in database');
         }
 
         res.json({
@@ -164,29 +247,179 @@ app.post('/api/lazada/refresh-token', async (req, res) => {
 });
 
 // ============================================
-// MIDDLEWARE - Verify Access Token
+// ACCOUNT MANAGEMENT ENDPOINTS (NEW!)
 // ============================================
 
-const verifyToken = (req, res, next) => {
-    const accessToken = req.headers.authorization?.replace('Bearer ', '');
-
-    if (!accessToken) {
-        return res.status(401).json({
-            error: 'Access token is required',
-            message: 'Please provide Authorization header with Bearer token'
+// Get all user's Lazada accounts
+app.get('/api/accounts', verifyUser, async (req, res) => {
+    try {
+        const accounts = await getUserLazadaAccounts(req.user.id);
+        const preferences = await getUserPreferences(req.user.id);
+        
+        res.json({
+            success: true,
+            accounts,
+            activeAccountId: preferences?.active_account_id || null
+        });
+    } catch (error) {
+        console.error('Error fetching accounts:', error);
+        res.status(500).json({
+            error: 'Failed to fetch accounts',
+            details: error.message
         });
     }
+});
 
-    req.accessToken = accessToken;
-    next();
+// Get a specific account
+app.get('/api/accounts/:accountId', verifyUser, async (req, res) => {
+    try {
+        const account = await getLazadaAccount(req.user.id, req.params.accountId);
+        
+        if (!account) {
+            return res.status(404).json({
+                error: 'Account not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            account
+        });
+    } catch (error) {
+        console.error('Error fetching account:', error);
+        res.status(500).json({
+            error: 'Failed to fetch account',
+            details: error.message
+        });
+    }
+});
+
+// Set active account
+app.post('/api/accounts/:accountId/activate', verifyUser, async (req, res) => {
+    try {
+        const account = await getLazadaAccount(req.user.id, req.params.accountId);
+        
+        if (!account) {
+            return res.status(404).json({
+                error: 'Account not found'
+            });
+        }
+        
+        await setActiveAccount(req.user.id, req.params.accountId);
+        
+        res.json({
+            success: true,
+            account,
+            message: 'Account activated successfully'
+        });
+    } catch (error) {
+        console.error('Error activating account:', error);
+        res.status(500).json({
+            error: 'Failed to activate account',
+            details: error.message
+        });
+    }
+});
+
+// Delete an account
+app.delete('/api/accounts/:accountId', verifyUser, async (req, res) => {
+    try {
+        await deleteLazadaAccount(req.user.id, req.params.accountId);
+        
+        res.json({
+            success: true,
+            message: 'Account removed successfully'
+        });
+    } catch (error) {
+        console.error('Error deleting account:', error);
+        res.status(500).json({
+            error: 'Failed to delete account',
+            details: error.message
+        });
+    }
+});
+
+// ============================================
+// MIDDLEWARE - Get Lazada Token from Account
+// ============================================
+
+const withLazadaToken = async (req, res, next) => {
+  // First check if token is directly provided
+  if (req.headers['x-lazada-token']) {
+    req.accessToken = req.headers['x-lazada-token'];
+    return next();
+  }
+
+  // Otherwise, get from active account or specified account
+  const accountId = req.headers['x-account-id'] || req.query.accountId;
+  
+  if (!accountId) {
+    // Try to get active account
+    const preferences = await getUserPreferences(req.user.id);
+    if (!preferences?.active_account_id) {
+      return res.status(400).json({
+        error: 'No account specified',
+        message: 'Please specify an account or set an active account'
+      });
+    }
+    req.accountId = preferences.active_account_id;
+  } else {
+    req.accountId = accountId;
+  }
+
+  const account = await getLazadaAccount(req.user.id, req.accountId);
+  
+  if (!account) {
+    return res.status(404).json({
+      error: 'Account not found'
+    });
+  }
+
+  // Check if token is expired
+  if (new Date(account.token_expires_at) < new Date()) {
+    // Try to refresh the token
+    try {
+      console.log('Token expired, attempting refresh...');
+      const tokenData = await lazadaAuth.refreshAccessToken(account.refresh_token);
+      
+      if (tokenData.code === '0' || tokenData.code === 0) {
+        // Update tokens in database
+        const updatedAccount = await updateLazadaTokens(req.user.id, req.accountId, {
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          expires_in: tokenData.expires_in
+        });
+        req.accessToken = updatedAccount.access_token;
+        req.account = updatedAccount;
+        console.log('Token refreshed successfully');
+      } else {
+        return res.status(401).json({
+          error: 'Token expired and refresh failed',
+          message: 'Please re-authenticate this account',
+          lazada_code: tokenData.code
+        });
+      }
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return res.status(401).json({
+        error: 'Token expired and refresh failed',
+        message: 'Please re-authenticate this account'
+      });
+    }
+  } else {
+    req.accessToken = account.access_token;
+    req.account = account;
+  }
+
+  next();
 };
 
 // ============================================
-// LAZADA API ENDPOINTS (Protected)
+// LAZADA API ENDPOINTS (Protected with user auth + Lazada token)
 // ============================================
 
 // Get seller information
-app.get('/api/lazada/seller', verifyToken, async (req, res) => {
+app.get('/api/lazada/seller', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const sellerData = await lazadaAuth.makeRequest(
             '/seller/get',
@@ -204,7 +437,7 @@ app.get('/api/lazada/seller', verifyToken, async (req, res) => {
 });
 
 // Get seller policy information
-app.get('/api/lazada/seller/policy', verifyToken, async (req, res) => {
+app.get('/api/lazada/seller/policy', verifyUser, withLazadaToken, async (req, res) => {
     try {
         console.log('Fetching seller policy...');
         
@@ -237,7 +470,7 @@ app.get('/api/lazada/seller/policy', verifyToken, async (req, res) => {
 });
 
 // Get products
-app.get('/api/lazada/products', verifyToken, async (req, res) => {
+app.get('/api/lazada/products', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const { filter = 'all', limit = 20, offset = 0 } = req.query;
 
@@ -262,7 +495,7 @@ app.get('/api/lazada/products', verifyToken, async (req, res) => {
 });
 
 // Get orders
-app.get('/api/lazada/orders', verifyToken, async (req, res) => {
+app.get('/api/lazada/orders', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const {
             created_after,
@@ -302,7 +535,7 @@ app.get('/api/lazada/orders', verifyToken, async (req, res) => {
 });
 
 // Get order details
-app.get('/api/lazada/order/:orderId', verifyToken, async (req, res) => {
+app.get('/api/lazada/order/:orderId', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const { orderId } = req.params;
 
@@ -327,7 +560,7 @@ app.get('/api/lazada/order/:orderId', verifyToken, async (req, res) => {
 // ============================================
 
 // Get items for a single order
-app.get('/api/lazada/order/:orderId/items', verifyToken, async (req, res) => {
+app.get('/api/lazada/order/:orderId/items', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const { orderId } = req.params;
 
@@ -356,7 +589,7 @@ app.get('/api/lazada/order/:orderId/items', verifyToken, async (req, res) => {
 });
 
 // Get items for multiple orders
-app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
+app.post('/api/lazada/orders/items', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const { orderIds } = req.body;
 
@@ -396,7 +629,7 @@ app.post('/api/lazada/orders/items', verifyToken, async (req, res) => {
 // ============================================
 
 // Get report overview
-app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, async (req, res) => {
+app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const {
             startDate,
@@ -419,21 +652,19 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
             });
         }
 
-        // Calculate previous period dates (same duration as selected period)
+        // Calculate previous period dates
         const start = new Date(startDate);
         const end = new Date(endDate);
-        const duration = Math.ceil((end - start) / (1000 * 60 * 60 * 24)); // days
+        const duration = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
         
         const lastEnd = new Date(start);
-        lastEnd.setDate(lastEnd.getDate() - 1); // day before start
+        lastEnd.setDate(lastEnd.getDate() - 1);
         
         const lastStart = new Date(lastEnd);
         lastStart.setDate(lastStart.getDate() - duration);
 
-        // Format dates as YYYY-MM-DD
         const formatDate = (date) => date.toISOString().split('T')[0];
 
-        // Lazada API requires BOTH current and previous period dates
         const params = {
             startDate: startDate.trim(),
             endDate: endDate.trim(),
@@ -443,27 +674,12 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
             useRtTable: 'false'
         };
 
-        // Add optional parameters
         if (dimensions) params.dimensions = dimensions;
         if (metrics) params.metrics = metrics;
         if (currencyType) params.currencyType = currencyType;
 
-        console.log('✅ Params for Lazada API (comparing two periods):');
-        console.log('   Current Period:');
-        console.log('     startDate:', params.startDate);
-        console.log('     endDate:', params.endDate);
-        console.log('   Previous Period (for comparison):');
-        console.log('     lastStartDate:', params.lastStartDate);
-        console.log('     lastEndDate:', params.lastEndDate);
-        console.log('   Other params:');
-        console.log('     bizCode:', params.bizCode);
-        console.log('     useRtTable:', params.useRtTable);
-        if (dimensions) console.log('   dimensions:', dimensions);
-        if (metrics) console.log('   metrics:', metrics);
-        if (currencyType) console.log('   currencyType:', currencyType);
+        console.log('✅ Params for Lazada API:', params);
 
-        console.log('\n📤 Calling Lazada API with GET method');
-        
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getReportOverview',
             req.accessToken,
@@ -471,18 +687,8 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
             'GET'
         );
 
-        console.log('\n📥 Response received:');
-        console.log('   Code:', reportData.code);
-        console.log('   Message:', reportData.message);
-
         if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('\n❌ API returned error:');
-            console.error('   Code:', reportData.code);
-            console.error('   Message:', reportData.message);
-            console.error('   Type:', reportData.type);
-            console.error('   Request ID:', reportData.request_id);
-            console.log('='.repeat(60) + '\n');
-            
+            console.error('❌ API returned error:', reportData);
             return res.status(400).json({
                 error: 'Lazada API Error',
                 code: reportData.code,
@@ -494,16 +700,9 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
         }
 
         console.log('✅ SUCCESS - Report data retrieved');
-        console.log('='.repeat(60) + '\n');
-        
         res.json(reportData);
     } catch (error) {
-        console.error('\n❌ EXCEPTION CAUGHT:');
-        console.error('   Message:', error.message);
-        console.error('   Response status:', error.response?.status);
-        console.error('   Response data:', error.response?.data);
-        console.log('='.repeat(60) + '\n');
-        
+        console.error('❌ EXCEPTION:', error.message);
         res.status(500).json({
             error: 'Request failed',
             message: error.message,
@@ -514,19 +713,11 @@ app.get('/api/lazada/sponsor/solutions/report/getReportOverview', verifyToken, a
 });
 
 // Get campaign list
-app.get('/api/lazada/sponsor/solutions/campaign/getCampaignList', verifyToken, async (req, res) => {
+app.get('/api/lazada/sponsor/solutions/campaign/getCampaignList', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const { pageNo = '1', pageSize = '100' } = req.query;
 
-        console.log('\n' + '='.repeat(60));
-        console.log('GET CAMPAIGN LIST REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { pageNo, pageSize });
-
-        const params = {
-            pageNo,
-            pageSize
-        };
+        const params = { pageNo, pageSize };
 
         const campaignData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/campaign/getCampaignList',
@@ -534,10 +725,6 @@ app.get('/api/lazada/sponsor/solutions/campaign/getCampaignList', verifyToken, a
             params,
             'GET'
         );
-
-        console.log('Response code:', campaignData.code);
-        console.log('Campaigns found:', campaignData.result?.campaigns?.length || 0);
-        console.log('='.repeat(60) + '\n');
 
         if (campaignData.code !== '0' && campaignData.code !== 0) {
             return res.status(400).json({
@@ -558,7 +745,7 @@ app.get('/api/lazada/sponsor/solutions/campaign/getCampaignList', verifyToken, a
 });
 
 // Get discovery report by adgroup
-app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verifyToken, async (req, res) => {
+app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const {
             campaignId,
@@ -568,11 +755,6 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verify
             pageSize = '1000'
         } = req.query;
 
-        console.log('\n' + '='.repeat(60));
-        console.log('GET DISCOVERY REPORT ADGROUP REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { campaignId, startDate, endDate, pageNo, pageSize });
-
         if (!campaignId || !startDate || !endDate) {
             return res.status(400).json({
                 error: 'Missing required parameters',
@@ -580,13 +762,7 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verify
             });
         }
 
-        const params = {
-            campaignId,
-            startDate,
-            endDate,
-            pageNo,
-            pageSize
-        };
+        const params = { campaignId, startDate, endDate, pageNo, pageSize };
 
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getDiscoveryReportAdgroup',
@@ -594,10 +770,6 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verify
             params,
             'GET'
         );
-
-        console.log('Response code:', reportData.code);
-        console.log('Reports found:', reportData.result?.result?.length || 0);
-        console.log('='.repeat(60) + '\n');
 
         if (reportData.code !== '0' && reportData.code !== 0) {
             return res.status(400).json({
@@ -618,7 +790,7 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup', verify
 });
 
 // Get campaign report on pre-placement
-app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', verifyToken, async (req, res) => {
+app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const {
             campaignId,
@@ -632,22 +804,6 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
             pageSize = '100',
             useRtTable = 'true'
         } = req.query;
-
-        console.log('\n' + '='.repeat(60));
-        console.log('GET CAMPAIGN REPORT ON PRE-PLACEMENT REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { 
-            campaignId, 
-            campaignName, 
-            startDate, 
-            endDate, 
-            productType,
-            sort,
-            order,
-            pageNo, 
-            pageSize,
-            useRtTable 
-        });
 
         if (!startDate || !endDate) {
             return res.status(400).json({
@@ -667,17 +823,9 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
             useRtTable
         };
 
-        // Add optional parameters
         if (campaignId) params.campaignId = campaignId;
         if (campaignName) params.campaignName = campaignName;
 
-        console.log('✅ Params for Lazada API:');
-        Object.entries(params).forEach(([key, value]) => {
-            console.log(`   ${key}:`, value);
-        });
-
-        console.log('\n📤 Calling Lazada API with GET method');
-        
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getReportCampaignOnPrePlacement',
             req.accessToken,
@@ -685,18 +833,7 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
             'GET'
         );
 
-        console.log('\n📥 Response received:');
-        console.log('   Code:', reportData.code);
-        console.log('   Message:', reportData.message);
-        console.log('   Records found:', reportData.result?.result?.length || 0);
-        console.log('   Total count:', reportData.result?.totalCount || 0);
-
         if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('\n❌ API returned error:');
-            console.error('   Code:', reportData.code);
-            console.error('   Message:', reportData.message);
-            console.log('='.repeat(60) + '\n');
-            
             return res.status(400).json({
                 error: 'Lazada API Error',
                 code: reportData.code,
@@ -706,17 +843,9 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
             });
         }
 
-        console.log('✅ SUCCESS - Campaign pre-placement report retrieved');
-        console.log('='.repeat(60) + '\n');
-        
         res.json(reportData);
     } catch (error) {
-        console.error('\n❌ EXCEPTION CAUGHT:');
-        console.error('   Message:', error.message);
-        console.error('   Response status:', error.response?.status);
-        console.error('   Response data:', error.response?.data);
-        console.log('='.repeat(60) + '\n');
-        
+        console.error('Campaign pre-placement error:', error);
         res.status(500).json({
             error: 'Request failed',
             message: error.message,
@@ -726,9 +855,8 @@ app.get('/api/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement', 
     }
 });
 
-
-// Get discovery report by campaign (for overview data with orders)
-app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verifyToken, async (req, res) => {
+// Get discovery report by campaign
+app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verifyUser, withLazadaToken, async (req, res) => {
     try {
         const {
             startDate,
@@ -737,11 +865,6 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
             pageSize = '1000'
         } = req.query;
 
-        console.log('\n' + '='.repeat(60));
-        console.log('GET DISCOVERY REPORT CAMPAIGN REQUEST');
-        console.log('='.repeat(60));
-        console.log('Query params:', { startDate, endDate, pageNo, pageSize });
-
         if (!startDate || !endDate) {
             return res.status(400).json({
                 error: 'Missing required parameters',
@@ -749,21 +872,8 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
             });
         }
 
-        const params = {
-            startDate,
-            endDate,
-            pageNo,
-            pageSize
-        };
+        const params = { startDate, endDate, pageNo, pageSize };
 
-        console.log('✅ Params for Lazada API:');
-        Object.entries(params).forEach(([key, value]) => {
-            console.log(`   ${key}:`, value);
-        });
-
-        console.log('\n📤 Calling Lazada API with GET method');
-        console.log('   Endpoint: /sponsor/solutions/report/getDiscoveryReportCampaign');
-        
         const reportData = await lazadaAuth.makeRequest(
             '/sponsor/solutions/report/getDiscoveryReportCampaign',
             req.accessToken,
@@ -771,19 +881,7 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
             'GET'
         );
 
-        console.log('\n📥 Response received:');
-        console.log('   Code:', reportData.code);
-        console.log('   Success:', reportData.success);
-        console.log('   Message:', reportData.message);
-        console.log('   Campaigns found:', reportData.result?.result?.length || 0);
-        console.log('   Total count:', reportData.result?.totalCount || 0);
-
         if (reportData.code !== '0' && reportData.code !== 0) {
-            console.error('\n❌ API returned error:');
-            console.error('   Code:', reportData.code);
-            console.error('   Message:', reportData.message);
-            console.log('='.repeat(60) + '\n');
-            
             return res.status(400).json({
                 error: 'Lazada API Error',
                 code: reportData.code,
@@ -793,27 +891,9 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
             });
         }
 
-        // Check if no data returned
-        if (!reportData.result?.result || reportData.result.result.length === 0) {
-            console.warn('\n⚠️ WARNING: API returned success but 0 campaigns');
-            console.warn('   This might mean:');
-            console.warn('   - No campaigns active during this period');
-            console.warn('   - Date format issue');
-            console.warn('   - Account has no Discovery campaigns');
-            console.warn('   - Wrong endpoint for this account type');
-        }
-
-        console.log('✅ SUCCESS - Discovery report campaign data retrieved');
-        console.log('='.repeat(60) + '\n');
-        
         res.json(reportData);
     } catch (error) {
-        console.error('\n❌ EXCEPTION CAUGHT:');
-        console.error('   Message:', error.message);
-        console.error('   Response status:', error.response?.status);
-        console.error('   Response data:', error.response?.data);
-        console.log('='.repeat(60) + '\n');
-        
+        console.error('Discovery report campaign error:', error);
         res.status(500).json({
             error: 'Request failed',
             message: error.message,
@@ -822,6 +902,7 @@ app.get('/api/lazada/sponsor/solutions/report/getDiscoveryReportCampaign', verif
         });
     }
 });
+
 // ============================================
 // ERROR HANDLING
 // ============================================
@@ -854,25 +935,25 @@ app.listen(PORT, () => {
     console.log(`🔑 Lazada App Key: ${process.env.LAZADA_APP_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log(`🔐 Lazada App Secret: ${process.env.LAZADA_APP_SECRET ? '✓ Set' : '✗ Missing'}`);
     console.log(`🌐 Lazada API URL: ${process.env.LAZADA_API_URL || 'Not set'}`);
+    console.log(`📦 Supabase URL: ${process.env.SUPABASE_URL ? '✓ Set' : '✗ Missing'}`);
+    console.log(`🔐 Supabase Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log('='.repeat(60));
     console.log('\n📋 Available endpoints:');
     console.log('  GET  /health');
     console.log('  GET  /api/test');
     console.log('\n🔐 Authentication:');
     console.log('  GET  /api/lazada/auth-url');
-    console.log('  POST /api/lazada/token');
-    console.log('  POST /api/lazada/refresh-token');
-    console.log('\n📦 Lazada API (require auth token):');
+    console.log('  POST /api/lazada/token (requires user auth)');
+    console.log('  POST /api/lazada/refresh-token (requires user auth)');
+    console.log('\n👤 Account Management (NEW!):');
+    console.log('  GET    /api/accounts');
+    console.log('  GET    /api/accounts/:accountId');
+    console.log('  POST   /api/accounts/:accountId/activate');
+    console.log('  DELETE /api/accounts/:accountId');
+    console.log('\n📦 Lazada API (require user auth + account):');
     console.log('  GET  /api/lazada/seller');
-    console.log('  GET  /api/lazada/seller/policy');
     console.log('  GET  /api/lazada/products');
     console.log('  GET  /api/lazada/orders');
-    console.log('  GET  /api/lazada/order/:orderId');
-    console.log('  GET  /api/lazada/order/:orderId/items');
-    console.log('  POST /api/lazada/orders/items');
-    console.log('\n📊 Sponsor Solutions:');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/getReportOverview');
-    console.log('  GET  /api/lazada/sponsor/solutions/campaign/getCampaignList');
-    console.log('  GET  /api/lazada/sponsor/solutions/report/getDiscoveryReportAdgroup');
+    console.log('  ... and more');
     console.log('='.repeat(60));
 });
