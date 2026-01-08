@@ -935,7 +935,7 @@ app.listen(PORT, () => {
     console.log(`🔑 Lazada App Key: ${process.env.LAZADA_APP_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log(`🔐 Lazada App Secret: ${process.env.LAZADA_APP_SECRET ? '✓ Set' : '✗ Missing'}`);
     console.log(`🌐 Lazada API URL: ${process.env.LAZADA_API_URL || 'Not set'}`);
-    console.log(`📦 Supabase URL: ${process.env.SUPABASE_URL ? '✓ Set' : '✗ Missing'}`);
+    console.log(`📦 Supabase URL: ${process.env.VITE_SUPABASE_URL ? '✓ Set' : '✗ Missing'}`);
     console.log(`🔐 Supabase Key: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log('='.repeat(60));
     console.log('\n📋 Available endpoints:');

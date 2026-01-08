@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
-import { AccountManager } from '../utils/AccountManager.jsx';
+import { useAccounts } from '../utils/AccountManager.jsx';
+import { auth } from '../lib/supabase';
 
 function OrderItems({ apiUrl }) {
   const navigate = useNavigate();
-  const [accounts, setAccounts] = useState([]);
+  const { accounts, activeAccount, loading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+  
   const [orders, setOrders] = useState([]);
   const [filteredOrders, setFilteredOrders] = useState([]);
   const [selectedOrders, setSelectedOrders] = useState([]);
@@ -40,6 +42,24 @@ function OrderItems({ apiUrl }) {
   const [totalOrders, setTotalOrders] = useState(0);
   const [loadingProgress, setLoadingProgress] = useState({});
 
+  // Helper function to make authenticated API calls
+  const authenticatedFetch = async (url, options = {}) => {
+    const token = await auth.getAccessToken();
+    
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers,
+      },
+    });
+  };
+
   // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event) {
@@ -51,17 +71,18 @@ function OrderItems({ apiUrl }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Fetch orders when accounts are loaded
   useEffect(() => {
-    const allAccounts = AccountManager.getAccounts();
-
-    if (allAccounts.length === 0) {
-      navigate('/', { replace: true });
+    if (!accountsLoading && accounts.length === 0) {
+      // No accounts connected, redirect to connect page
+      navigate('/lazada-auth', { replace: true });
       return;
     }
 
-    setAccounts(allAccounts);
-    fetchAllAccountsOrders(allAccounts);
-  }, [navigate]);
+    if (!accountsLoading && accounts.length > 0) {
+      fetchAllAccountsOrders(accounts);
+    }
+  }, [accountsLoading, accounts, navigate]);
 
   useEffect(() => {
     filterOrders();
@@ -98,12 +119,12 @@ function OrderItems({ apiUrl }) {
           const accountOrders = result.value.map(order => ({
             ...order,
             _account_id: accountsList[index].id,
-            _account_name: accountsList[index].account,
+            _account_name: accountsList[index].account_name || accountsList[index].seller_id,
             _account_country: accountsList[index].country
           }));
           allOrders.push(...accountOrders);
         } else {
-          console.error(`Failed to fetch orders for account ${accountsList[index].account}:`, result.reason);
+          console.error(`Failed to fetch orders for account ${accountsList[index].account_name}:`, result.reason);
         }
       });
 
@@ -132,12 +153,11 @@ function OrderItems({ apiUrl }) {
 
       // Keep fetching until we get all orders
       while (hasMoreOrders) {
-        const response = await fetch(
+        const response = await authenticatedFetch(
           `${apiUrl}/lazada/orders?limit=${limit}&offset=${offset}&created_after=${encodeURIComponent(createdAfter)}&sort_by=created_at&sort_direction=DESC`,
           {
             headers: {
-              'Authorization': `Bearer ${account.access_token}`,
-              'Content-Type': 'application/json'
+              'X-Account-Id': accountId, // Tell backend which Lazada account to use
             }
           }
         );
@@ -162,8 +182,8 @@ function OrderItems({ apiUrl }) {
           }));
         } else {
           setLoadingProgress(prev => ({ ...prev, [accountId]: 'error' }));
-          if (data.code === 'InvalidAccessToken') {
-            console.error(`Account ${account.account} has invalid token`);
+          if (data.code === 'InvalidAccessToken' || response.status === 401) {
+            console.error(`Account ${account.account_name} has invalid token - may need re-authentication`);
           }
           hasMoreOrders = false;
         }
@@ -173,7 +193,7 @@ function OrderItems({ apiUrl }) {
       return allOrders;
     } catch (err) {
       setLoadingProgress(prev => ({ ...prev, [accountId]: 'error' }));
-      console.error(`Error fetching orders for ${account.account}:`, err);
+      console.error(`Error fetching orders for ${account.account_name}:`, err);
       return [];
     }
   };
@@ -219,18 +239,10 @@ function OrderItems({ apiUrl }) {
     setLoading(true);
     setError(null);
 
-    const account = accounts.find(acc => acc.id === accountId);
-    if (!account) {
-      setError('Account not found');
-      setLoading(false);
-      return;
-    }
-
     try {
-      const response = await fetch(`${apiUrl}/lazada/order/${orderId}/items`, {
+      const response = await authenticatedFetch(`${apiUrl}/lazada/order/${orderId}/items`, {
         headers: {
-          'Authorization': `Bearer ${account.access_token}`,
-          'Content-Type': 'application/json'
+          'X-Account-Id': accountId,
         }
       });
 
@@ -268,7 +280,10 @@ function OrderItems({ apiUrl }) {
     setOrders([]);
     setSelectedOrders([]);
     setOrderItems([]);
-    fetchAllAccountsOrders(accounts);
+    refreshAccounts(); // Refresh accounts from backend
+    if (accounts.length > 0) {
+      fetchAllAccountsOrders(accounts);
+    }
   };
 
   const handleDateFilterApply = () => {
@@ -289,14 +304,12 @@ function OrderItems({ apiUrl }) {
   };
 
   const handleArrangeShipment = async (order) => {
-    // Your API call here
     console.log('Arrange shipment for:', order.order_id);
     setOpenDropdown(null);
   };
 
   const handleCancelOrder = async (order) => {
     if (window.confirm('Are you sure you want to cancel this order?')) {
-      // Your API call here
       console.log('Cancel order:', order.order_id);
       setOpenDropdown(null);
     }
@@ -418,6 +431,18 @@ function OrderItems({ apiUrl }) {
 
   const uniqueStatuses = [...new Set(orders.flatMap(order => order.statuses || []))];
 
+  // Show loading while accounts are being fetched
+  if (accountsLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading accounts...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Account Status Banner */}
@@ -429,10 +454,10 @@ function OrderItems({ apiUrl }) {
               {accounts.map(account => (
                 <div key={account.id} className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg shadow-sm">
                   <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-semibold text-sm">
-                    {account.account?.charAt(0)?.toUpperCase()}
+                    {(account.account_name || account.seller_id)?.charAt(0)?.toUpperCase()}
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-gray-900">{account.account}</p>
+                    <p className="text-sm font-medium text-gray-900">{account.account_name || account.seller_id}</p>
                     <p className="text-xs text-gray-500 uppercase">{account.country}</p>
                   </div>
                   {loadingProgress[account.id] === 'success' && (
@@ -452,6 +477,14 @@ function OrderItems({ apiUrl }) {
                 </div>
               ))}
             </div>
+            {accounts.length === 0 && (
+              <button
+                onClick={() => navigate('/lazada-auth')}
+                className="mt-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+              >
+                + Connect Lazada Account
+              </button>
+            )}
           </div>
           <div className="text-right">
             <p className="text-2xl font-bold text-blue-600">{orders.length}</p>
@@ -469,6 +502,15 @@ function OrderItems({ apiUrl }) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => navigate('/lazada-auth')}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            Add Account
+          </button>
           <button
             onClick={exportCurrentPageToExcel}
             disabled={paginatedOrders.length === 0}
@@ -532,7 +574,7 @@ function OrderItems({ apiUrl }) {
               <option value="all">All Accounts</option>
               {accounts.map(account => (
                 <option key={account.id} value={account.id}>
-                  {account.account} ({account.country})
+                  {account.account_name || account.seller_id} ({account.country})
                 </option>
               ))}
             </select>
@@ -709,201 +751,202 @@ function OrderItems({ apiUrl }) {
                       >
                         More Actions
                         <svg className="ml-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinej="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                         </svg>
                       </button>
 
                       {openDropdown === order.order_id && (
-                    <div 
-                      ref={dropdownRef}
-                      className="absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10"
-                    >
-                      <div className="py-1">
-                        <button
-                          onClick={() => handleArrangeShipment(order)}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                        <div 
+                          ref={dropdownRef}
+                          className="absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10"
                         >
-                          Arrange Shipment
-                        </button>
-                        <button
-                          onClick={() => console.log('Recreate Package')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Recreate Package
-                        </button>
-                        <button
-                          onClick={() => console.log('Request Extension')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Request Extension
-                        </button>
-                        <button
-                          onClick={() => console.log('Logistics Status')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Logistics Status
-                        </button>
-                        <button
-                          onClick={() => console.log('Print AWB')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Print AWB
-                        </button>
-                        <button
-                          onClick={() => console.log('Print Packing List')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Print Packing List
-                        </button>
-                        <button
-                          onClick={() => console.log('Print Pick List')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Print Pick List
-                        </button>
-                        <button
-                          onClick={() => console.log('Seller Note')}
-                          className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                        >
-                          Seller Note
-                        </button>
-                        <div className="border-t border-gray-100"></div>
-                        <button
-                          onClick={() => handleCancelOrder(order)}
-                          className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
-                        >
-                          Cancel Order
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
+                          <div className="py-1">
+                            <button
+                              onClick={() => handleArrangeShipment(order)}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Arrange Shipment
+                            </button>
+                            <button
+                              onClick={() => console.log('Recreate Package')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Recreate Package
+                            </button>
+                            <button
+                              onClick={() => console.log('Request Extension')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Request Extension
+                            </button>
+                            <button
+                              onClick={() => console.log('Logistics Status')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Logistics Status
+                            </button>
+                            <button
+                              onClick={() => console.log('Print AWB')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Print AWB
+                            </button>
+                            <button
+                              onClick={() => console.log('Print Packing List')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Print Packing List
+                            </button>
+                            <button
+                              onClick={() => console.log('Print Pick List')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Print Pick List
+                            </button>
+                            <button
+                              onClick={() => console.log('Seller Note')}
+                              className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                            >
+                              Seller Note
+                            </button>
+                            <div className="border-t border-gray-100"></div>
+                            <button
+                              onClick={() => handleCancelOrder(order)}
+                              className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
+                            >
+                              Cancel Order
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
 
-    {/* Pagination */}
-    {totalPages > 1 && (
-      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200">
-        <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm text-gray-700">
-              Showing <span className="font-medium">{indexOfFirstOrder + 1}</span> to{' '}
-              <span className="font-medium">
-                {Math.min(indexOfLastOrder, filteredOrders.length)}
-              </span>{' '}
-              of <span className="font-medium">{filteredOrders.length}</span> results
-            </p>
-          </div>
-          <div>
-            <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
-              <button
-                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                disabled={currentPage === 1}
-                className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Previous
-              </button>
-              {[...Array(Math.min(totalPages, 5))].map((_, idx) => {
-                const pageNum = idx + 1;
-                return (
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200">
+            <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm text-gray-700">
+                  Showing <span className="font-medium">{indexOfFirstOrder + 1}</span> to{' '}
+                  <span className="font-medium">
+                    {Math.min(indexOfLastOrder, filteredOrders.length)}
+                  </span>{' '}
+                  of <span className="font-medium">{filteredOrders.length}</span> results
+                </p>
+              </div>
+              <div>
+                <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
                   <button
-                    key={pageNum}
-                    onClick={() => setCurrentPage(pageNum)}
-                    className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
-                      currentPage === pageNum
-                        ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
-                        : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
-                    }`}
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                    className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
                   >
-                    {pageNum}
+                    Previous
                   </button>
-                );
-              })}
-              <button
-                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                disabled={currentPage === totalPages}
-                className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Next
-              </button>
-            </nav>
+                  {[...Array(Math.min(totalPages, 5))].map((_, idx) => {
+                    const pageNum = idx + 1;
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
+                          currentPage === pageNum
+                            ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                            : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages}
+                    className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </nav>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Order Items Table */}
+      {orderItems.length > 0 && (
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+            <h2 className="text-lg font-semibold">Order Items ({orderItems.length})</h2>
+            <button
+              onClick={exportOrderItemsToExcel}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2 text-sm"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Export Items
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Product
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    SKU
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Quantity
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Price
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {orderItems.map((item, index) => (
+                  <tr key={index} className="hover:bg-gray-50">
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                      {item.variation && (
+                        <div className="text-xs text-gray-500">{item.variation}</div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {item.sku}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {item.quantity || 1}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {item.paid_price} {item.currency || 'PHP'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
+                        {item.status || 'N/A'}
+                      </span> 
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
-    )}
-  </div>
-
-  {/* Order Items Table */}
-  {orderItems.length > 0 && (
-    <div className="bg-white rounded-lg shadow-md overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Order Items ({orderItems.length})</h2>
-        <button
-          onClick={exportOrderItemsToExcel}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2 text-sm"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          Export Items
-        </button>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Product
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                SKU
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Quantity
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Price
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {orderItems.map((item, index) => (
-              <tr key={index} className="hover:bg-gray-50">
-                <td className="px-6 py-4">
-                  <div className="text-sm font-medium text-gray-900">{item.name}</div>
-                  {item.variation && (
-                    <div className="text-xs text-gray-500">{item.variation}</div>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {item.sku}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {item.quantity || 1}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                  {item.paid_price} {item.currency || 'PHP'}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
-                    {item.status || 'N/A'}
-                  </span> 
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      )}
     </div>
-  )}
-</div>
-);
+  );
 }
+
 export default OrderItems;

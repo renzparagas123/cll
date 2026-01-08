@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Calendar, Download, RefreshCw, Info } from 'lucide-react';
-import { AccountManager } from '../utils/AccountManager';
+import { useAccounts } from '../utils/AccountManager';
+import { auth } from '../lib/supabase';
 import DataCharts from '../components/DataCharts';
 
 export default function DataInsights({ apiUrl }) {
   const navigate = useNavigate();
+  const { accounts, loading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+  
   const [activeTab, setActiveTab] = useState('overview');
-  const [accounts, setAccounts] = useState([]);
   const [metricsData, setMetricsData] = useState([]);
   const [chartData, setChartData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -33,18 +35,36 @@ export default function DataInsights({ apiUrl }) {
   const [dateRange, setDateRange] = useState(getDefaultDates());
   const [selectedAccount, setSelectedAccount] = useState('all');
 
-  useEffect(() => {
-    const allAccounts = AccountManager.getAccounts();
+  // Helper function to make authenticated API calls
+  const authenticatedFetch = async (url, options = {}) => {
+    const token = await auth.getAccessToken();
     
-    if (allAccounts.length === 0) {
-      navigate('/', { replace: true });
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers,
+      },
+    });
+  };
+
+  // Initialize when accounts are loaded
+  useEffect(() => {
+    if (accountsLoading) return;
+    
+    if (accounts.length === 0) {
+      navigate('/lazada-auth', { replace: true });
       return;
     }
     
-    setAccounts(allAccounts);
-    
-    const arlaAccount = allAccounts.find(acc => 
-      acc.account?.toLowerCase().includes('arla') || 
+    // Find arla account if exists
+    const arlaAccount = accounts.find(acc => 
+      (acc.account_name || acc.seller_id)?.toLowerCase().includes('arla') || 
       acc.id?.toLowerCase().includes('arla')
     );
     
@@ -52,8 +72,8 @@ export default function DataInsights({ apiUrl }) {
       setSelectedAccount(arlaAccount.id);
     }
     
-    fetchAllAccountsReports(allAccounts);
-  }, [navigate]);
+    fetchAllAccountsReports(accounts);
+  }, [accountsLoading, accounts, navigate]);
 
   useEffect(() => {
     if (accounts.length > 0 && selectedCampaign === 'overview') {
@@ -82,13 +102,11 @@ export default function DataInsights({ apiUrl }) {
       const account = accounts.find(acc => acc.id === accountId);
       if (!account) return;
 
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${apiUrl}/lazada/sponsor/solutions/campaign/getCampaignList?pageNo=1&pageSize=100`,
         {
-          method: 'GET',
           headers: {
-            'Authorization': `Bearer ${account.access_token}`,
-            'Content-Type': 'application/json'
+            'X-Account-Id': accountId,
           }
         }
       );
@@ -137,13 +155,11 @@ export default function DataInsights({ apiUrl }) {
         params.append('campaignName', selectedCampaignData.campaignName);
       }
 
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${apiUrl}/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement?${params}`,
         {
-          method: 'GET',
           headers: {
-            'Authorization': `Bearer ${account.access_token}`,
-            'Content-Type': 'application/json'
+            'X-Account-Id': selectedAccount,
           }
         }
       );
@@ -155,7 +171,7 @@ export default function DataInsights({ apiUrl }) {
         
         const processedMetrics = campaigns.map(campaign => ({
           account_id: account.id,
-          account_name: account.account,
+          account_name: account.account_name || account.seller_id,
           account_country: account.country,
           campaignName: campaign.campaignName || 'Unknown',
           campaignId: campaign.campaignId,
@@ -239,13 +255,11 @@ export default function DataInsights({ apiUrl }) {
             pageSize: '1000'
           });
 
-          const response = await fetch(
+          const response = await authenticatedFetch(
             `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
             {
-              method: 'GET',
               headers: {
-                'Authorization': `Bearer ${account.access_token}`,
-                'Content-Type': 'application/json'
+                'X-Account-Id': account.id,
               }
             }
           );
@@ -255,13 +269,14 @@ export default function DataInsights({ apiUrl }) {
           if (response.ok && (data.code === '0' || data.code === 0)) {
             const campaigns = data.result?.result || [];
             
-            console.log(`${date} - ${account.account}: Found ${campaigns.length} campaigns`);
+            const accountName = account.account_name || account.seller_id;
+            console.log(`${date} - ${accountName}: Found ${campaigns.length} campaigns`);
             
             campaigns.forEach(campaign => {
               allCampaigns.push({
                 date: date,
                 account_id: account.id,
-                account_name: account.account,
+                account_name: accountName,
                 account_country: account.country,
                 campaignName: campaign.campaignName || 'Unknown',
                 campaignId: campaign.campaignId,
@@ -371,6 +386,8 @@ export default function DataInsights({ apiUrl }) {
         dateList.push(new Date(d).toISOString().split('T')[0]);
       }
 
+      const accountName = account.account_name || account.seller_id;
+
       const dailyDataPromises = dateList.map(async (date) => {
         const params = new URLSearchParams({
           startDate: date,
@@ -379,13 +396,11 @@ export default function DataInsights({ apiUrl }) {
           pageSize: '1000'
         });
 
-        const response = await fetch(
+        const response = await authenticatedFetch(
           `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
           {
-            method: 'GET',
             headers: {
-              'Authorization': `Bearer ${account.access_token}`,
-              'Content-Type': 'application/json'
+              'X-Account-Id': account.id,
             }
           }
         );
@@ -511,7 +526,7 @@ export default function DataInsights({ apiUrl }) {
         parsed: avgMetrics,
         timeline: timeline,
         rawResponse: {
-          account_name: account.account,
+          account_name: accountName,
           account_country: account.country,
           status: 200,
           statusText: 'OK',
@@ -520,11 +535,12 @@ export default function DataInsights({ apiUrl }) {
         }
       };
     } catch (err) {
+      const accountName = account.account_name || account.seller_id;
       return { 
         parsed: null,
         timeline: [],
         rawResponse: {
-          account_name: account.account,
+          account_name: accountName,
           account_country: account.country,
           status: 'error',
           statusText: err.message,
@@ -590,6 +606,7 @@ export default function DataInsights({ apiUrl }) {
   };
 
   const handleRefresh = () => {
+    refreshAccounts(); // Refresh accounts from backend
     if (selectedCampaign === 'overview') {
       fetchAllAccountsReports(accounts);
     } else {
@@ -713,6 +730,18 @@ export default function DataInsights({ apiUrl }) {
     );
   };
 
+  // Show loading while accounts are being fetched
+  if (accountsLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading accounts...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto bg-white min-h-screen">
       <div className="border-b border-gray-200 px-6 py-4">
@@ -781,7 +810,7 @@ export default function DataInsights({ apiUrl }) {
               <select value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px]">
                 <option value="all">All Accounts</option>
                 {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>{account.account} ({account.country})</option>
+                  <option key={account.id} value={account.id}>{account.account_name || account.seller_id} ({account.country})</option>
                 ))}
               </select>
 
