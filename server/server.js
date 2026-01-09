@@ -12,6 +12,7 @@ import {
   getUserPreferences,
   setActiveAccount
 } from './utils/supabase.js';
+import syncRoutes from './routes/syncRoutes.js';
 
 dotenv.config();
 
@@ -32,7 +33,7 @@ const corsOptions = {
     : ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Account-Id', 'X-Lazada-Token']  // ← ADD THIS
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Account-Id', 'X-Lazada-Token']
 };
 
 // Middleware
@@ -107,6 +108,11 @@ app.get('/api/test', (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
+
+// ============================================
+// SYNC ROUTES (Data Caching)
+// ============================================
+app.use('/api/sync', syncRoutes);
 
 // ============================================
 // LAZADA AUTHENTICATION ENDPOINTS
@@ -945,11 +951,20 @@ app.listen(PORT, () => {
     console.log('  GET  /api/lazada/auth-url');
     console.log('  POST /api/lazada/token (requires user auth)');
     console.log('  POST /api/lazada/refresh-token (requires user auth)');
-    console.log('\n👤 Account Management (NEW!):');
+    console.log('\n👤 Account Management:');
     console.log('  GET    /api/accounts');
     console.log('  GET    /api/accounts/:accountId');
     console.log('  POST   /api/accounts/:accountId/activate');
     console.log('  DELETE /api/accounts/:accountId');
+    console.log('\n🔄 Data Sync (NEW!):');
+    console.log('  POST /api/sync/all');
+    console.log('  POST /api/sync/orders');
+    console.log('  POST /api/sync/campaigns');
+    console.log('  POST /api/sync/campaign-metrics');
+    console.log('  GET  /api/sync/status');
+    console.log('  GET  /api/sync/data/orders');
+    console.log('  GET  /api/sync/data/campaigns');
+    console.log('  GET  /api/sync/data/campaign-metrics');
     console.log('\n📦 Lazada API (require user auth + account):');
     console.log('  GET  /api/lazada/seller');
     console.log('  GET  /api/lazada/products');
