@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { Calendar, Download, RefreshCw, Info } from 'lucide-react';
+import { Calendar, Download, RefreshCw, Info, Database } from 'lucide-react';
 import { useAccounts } from '../utils/AccountManager';
 import { auth } from '../lib/supabase';
+import { SyncService, CachedDataService } from '../utils/CachedDataService';
 import DataCharts from '../components/DataCharts';
 
 export default function DataInsights({ apiUrl }) {
@@ -20,6 +21,11 @@ export default function DataInsights({ apiUrl }) {
   const [campaigns, setCampaigns] = useState([]);
   const [selectedCampaign, setSelectedCampaign] = useState('overview');
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
+
+  // Data source toggle
+  const [useCache, setUseCache] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
   
   const getDefaultDates = () => {
     const today = new Date();
@@ -53,6 +59,120 @@ export default function DataInsights({ apiUrl }) {
     });
   };
 
+  // Fetch sync status on mount
+  useEffect(() => {
+    fetchSyncStatus();
+  }, []);
+
+  const fetchSyncStatus = async () => {
+    try {
+      const result = await SyncService.getStatus();
+      if (result.success && result.data?.settings?.last_sync_at) {
+        setLastSyncTime(new Date(result.data.settings.last_sync_at));
+      }
+    } catch (err) {
+      console.error('Failed to fetch sync status:', err);
+    }
+  };
+
+  // Sync campaign metrics to cache
+  const handleSyncMetrics = async () => {
+    setSyncing(true);
+    setError(null);
+
+    try {
+      const daysBack = Math.ceil(
+        (new Date(dateRange.endDate) - new Date(dateRange.startDate)) / (1000 * 60 * 60 * 24)
+      ) + 1;
+
+      const result = await SyncService.syncCampaignMetrics(
+        selectedAccount !== 'all' ? selectedAccount : null,
+        daysBack
+      );
+
+      if (result.success) {
+        setLastSyncTime(new Date());
+        alert(`Sync completed! ${result.data.total_synced} metric records synced.`);
+        
+        if (useCache) {
+          fetchCachedMetrics();
+        }
+      } else {
+        throw new Error(result.error || 'Sync failed');
+      }
+    } catch (err) {
+      setError('Sync failed: ' + err.message);
+      alert('Sync failed: ' + err.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Fetch cached metrics from Supabase
+  const fetchCachedMetrics = async () => {
+    setLoading(true);
+    setError(null);
+    setMetricsData([]);
+
+    try {
+      const result = await CachedDataService.getCampaignMetrics({
+        accountId: selectedAccount !== 'all' ? selectedAccount : undefined,
+        dateFrom: dateRange.startDate,
+        dateTo: dateRange.endDate
+      });
+
+      if (result.success) {
+        const formattedMetrics = result.data.map(metric => ({
+          date: metric.metric_date,
+          account_id: metric.account_id,
+          account_name: metric.lazada_accounts?.account_name || metric.lazada_accounts?.seller_id,
+          account_country: metric.lazada_accounts?.country,
+          campaignName: metric.campaign_name || 'Unknown',
+          campaignId: metric.campaign_id,
+          campaignType: metric.raw_data?.campaignType,
+          campaignObjective: metric.raw_data?.campaignObjective,
+          dayBudget: metric.day_budget || 0,
+          spend: metric.spend || 0,
+          revenue: metric.store_revenue || 0,
+          storeRevenue: metric.store_revenue || 0,
+          productRevenue: metric.product_revenue || 0,
+          orders: metric.store_orders || 0,
+          storeOrders: metric.store_orders || 0,
+          productOrders: metric.product_orders || 0,
+          unitsSold: metric.store_unit_sold || 0,
+          storeUnitSold: metric.store_unit_sold || 0,
+          productUnitSold: metric.product_unit_sold || 0,
+          roi: metric.store_roi || 0,
+          impressions: metric.impressions || 0,
+          clicks: metric.clicks || 0,
+          ctr: metric.ctr || 0,
+          cpc: metric.cpc || 0,
+          storeCvr: metric.store_cvr || 0,
+          productCvr: metric.product_cvr || 0,
+          storeA2c: metric.store_a2c || 0,
+          productA2c: metric.product_a2c || 0,
+          _synced_at: metric.synced_at
+        }));
+
+        formattedMetrics.sort((a, b) => {
+          const dateCompare = new Date(b.date) - new Date(a.date);
+          if (dateCompare !== 0) return dateCompare;
+          return (a.campaignName || '').localeCompare(b.campaignName || '');
+        });
+
+        setMetricsData(formattedMetrics);
+        setChartData([]);
+      } else {
+        throw new Error(result.error || 'Failed to fetch cached metrics');
+      }
+    } catch (err) {
+      setError('Failed to fetch cached metrics: ' + err.message);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Initialize when accounts are loaded
   useEffect(() => {
     if (accountsLoading) return;
@@ -62,7 +182,6 @@ export default function DataInsights({ apiUrl }) {
       return;
     }
     
-    // Find arla account if exists
     const arlaAccount = accounts.find(acc => 
       (acc.account_name || acc.seller_id)?.toLowerCase().includes('arla') || 
       acc.id?.toLowerCase().includes('arla')
@@ -72,14 +191,22 @@ export default function DataInsights({ apiUrl }) {
       setSelectedAccount(arlaAccount.id);
     }
     
-    fetchAllAccountsReports(accounts);
+    if (useCache) {
+      fetchCachedMetrics();
+    } else {
+      fetchAllAccountsReports(accounts);
+    }
   }, [accountsLoading, accounts, navigate]);
 
   useEffect(() => {
     if (accounts.length > 0 && selectedCampaign === 'overview') {
-      fetchAllAccountsReports(accounts);
+      if (useCache) {
+        fetchCachedMetrics();
+      } else {
+        fetchAllAccountsReports(accounts);
+      }
     }
-  }, [dateRange]);
+  }, [dateRange, useCache]);
 
   useEffect(() => {
     if (selectedAccount && selectedAccount !== 'all') {
@@ -376,181 +503,6 @@ export default function DataInsights({ apiUrl }) {
     }
   }, [selectedAccount]);
 
-  const fetchAccountReports = async (account) => {
-    try {
-      const start = new Date(dateRange.startDate);
-      const end = new Date(dateRange.endDate);
-      const dateList = [];
-      
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        dateList.push(new Date(d).toISOString().split('T')[0]);
-      }
-
-      const accountName = account.account_name || account.seller_id;
-
-      const dailyDataPromises = dateList.map(async (date) => {
-        const params = new URLSearchParams({
-          startDate: date,
-          endDate: date,
-          pageNo: '1',
-          pageSize: '1000'
-        });
-
-        const response = await authenticatedFetch(
-          `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
-          {
-            headers: {
-              'X-Account-Id': account.id,
-            }
-          }
-        );
-
-        const data = await response.json();
-
-        if (response.ok && (data.code === '0' || data.code === 0)) {
-          const campaigns = data.result?.result || [];
-          
-          console.log(`${date}: Found ${campaigns.length} campaigns`);
-          
-          if (campaigns.length === 0) {
-            console.warn(`⚠️ No campaigns found for ${date}`);
-            return {
-              date: date,
-              spend: 0,
-              revenue: 0,
-              orders: 0,
-              unitsSold: 0,
-              roi: 0,
-              impressions: 0,
-              clicks: 0,
-              ctr: 0,
-              cpc: 0
-            };
-          }
-          
-          const dayTotals = campaigns.reduce((acc, campaign) => {
-            console.log(`  - ${campaign.campaignName} (Type: ${campaign.campaignType}): orders=${campaign.storeOrders}, units=${campaign.storeUnitSold}`);
-            
-            return {
-              spend: acc.spend + parseFloat(campaign.spend || 0),
-              storeRevenue: acc.storeRevenue + parseFloat(campaign.storeRevenue || 0),
-              productRevenue: acc.productRevenue + parseFloat(campaign.productRevenue || 0),
-              storeOrders: acc.storeOrders + parseInt(campaign.storeOrders || 0),
-              storeUnitSold: acc.storeUnitSold + parseInt(campaign.storeUnitSold || 0),
-              impressions: acc.impressions + parseInt(campaign.impressions || 0),
-              clicks: acc.clicks + parseInt(campaign.clicks || 0),
-              roiSum: acc.roiSum + parseFloat(campaign.storeRoi || 0),
-              ctrSum: acc.ctrSum + parseFloat(campaign.ctr || 0),
-              cpcSum: acc.cpcSum + parseFloat(campaign.cpc || 0),
-              count: acc.count + 1
-            };
-          }, {
-            spend: 0,
-            storeRevenue: 0,
-            productRevenue: 0,
-            storeOrders: 0,
-            storeUnitSold: 0,
-            impressions: 0,
-            clicks: 0,
-            roiSum: 0,
-            ctrSum: 0,
-            cpcSum: 0,
-            count: 0
-          });
-
-          const totalRevenue = dayTotals.storeRevenue + dayTotals.productRevenue;
-          const totalOrders = dayTotals.storeOrders;
-          const totalUnitsSold = dayTotals.storeUnitSold;
-          const avgRoi = dayTotals.count > 0 ? dayTotals.roiSum / dayTotals.count : 0;
-          const avgCtr = dayTotals.count > 0 ? dayTotals.ctrSum / dayTotals.count : 0;
-          const avgCpc = dayTotals.count > 0 ? dayTotals.cpcSum / dayTotals.count : 0;
-          
-          console.log(`  ✅ TOTALS for ${date}: ${totalOrders} orders, ${totalUnitsSold} units, ${dayTotals.spend.toFixed(2)} spend`);
-          
-          return {
-            date: date,
-            spend: dayTotals.spend,
-            revenue: totalRevenue,
-            orders: totalOrders,
-            unitsSold: totalUnitsSold,
-            roi: avgRoi,
-            impressions: dayTotals.impressions,
-            clicks: dayTotals.clicks,
-            ctr: avgCtr,
-            cpc: avgCpc
-          };
-        }
-        
-        console.error(`❌ Failed to fetch data for ${date}:`, data.message || 'Unknown error');
-        return null;
-      });
-
-      const dailyResults = await Promise.all(dailyDataPromises);
-      const timeline = dailyResults.filter(d => d !== null);
-
-      const totalMetrics = timeline.reduce((acc, day) => ({
-        spend: acc.spend + day.spend,
-        revenue: acc.revenue + day.revenue,
-        orders: acc.orders + day.orders,
-        unitsSold: acc.unitsSold + day.unitsSold,
-        roi: acc.roi + day.roi,
-        impressions: acc.impressions + day.impressions,
-        clicks: acc.clicks + day.clicks,
-        ctr: acc.ctr + day.ctr,
-        cpc: acc.cpc + day.cpc
-      }), {
-        spend: 0,
-        revenue: 0,
-        orders: 0,
-        unitsSold: 0,
-        roi: 0,
-        impressions: 0,
-        clicks: 0,
-        ctr: 0,
-        cpc: 0
-      });
-
-      const avgMetrics = {
-        ...totalMetrics,
-        roi: timeline.length > 0 ? totalMetrics.roi / timeline.length : 0,
-        ctr: timeline.length > 0 ? totalMetrics.ctr / timeline.length : 0,
-        cpc: timeline.length > 0 ? totalMetrics.cpc / timeline.length : 0,
-        spendChange: 0,
-        revenueChange: 0,
-        ordersChange: 0,
-        unitsSoldChange: 0,
-        roiChange: 0
-      };
-
-      return { 
-        parsed: avgMetrics,
-        timeline: timeline,
-        rawResponse: {
-          account_name: accountName,
-          account_country: account.country,
-          status: 200,
-          statusText: 'OK',
-          headers: {},
-          fullResponse: { message: `Fetched ${timeline.length} days of data` }
-        }
-      };
-    } catch (err) {
-      const accountName = account.account_name || account.seller_id;
-      return { 
-        parsed: null,
-        timeline: [],
-        rawResponse: {
-          account_name: accountName,
-          account_country: account.country,
-          status: 'error',
-          statusText: err.message,
-          headers: {},
-          fullResponse: { error: err.message }
-        }
-      };
-    }
-  };
-
   const handleDownloadCSV = () => {
     const filteredData = selectedAccount === 'all' 
       ? metricsData 
@@ -606,9 +558,13 @@ export default function DataInsights({ apiUrl }) {
   };
 
   const handleRefresh = () => {
-    refreshAccounts(); // Refresh accounts from backend
+    refreshAccounts();
     if (selectedCampaign === 'overview') {
-      fetchAllAccountsReports(accounts);
+      if (useCache) {
+        fetchCachedMetrics();
+      } else {
+        fetchAllAccountsReports(accounts);
+      }
     } else {
       fetchCampaignPrePlacementData();
     }
@@ -677,7 +633,6 @@ export default function DataInsights({ apiUrl }) {
     });
 
     console.log('✅ TOTALS:', totals);
-    console.log('⚠️ Note: If orders dont match Seller Center, it means campaigns share order attribution');
 
     const avgCTR = totals.totalImpressions > 0 ? (totals.totalClicks / totals.totalImpressions) * 100 : 0;
     const avgCPC = totals.totalClicks > 0 ? totals.totalSpend / totals.totalClicks : 0;
@@ -730,7 +685,6 @@ export default function DataInsights({ apiUrl }) {
     );
   };
 
-  // Show loading while accounts are being fetched
   if (accountsLoading) {
     return (
       <div className="flex items-center justify-center min-h-96">
@@ -744,6 +698,73 @@ export default function DataInsights({ apiUrl }) {
 
   return (
     <div className="max-w-7xl mx-auto bg-white min-h-screen">
+      {/* Data Source Toggle Banner */}
+      <div className="bg-gradient-to-r from-purple-50 to-blue-50 p-4 border-b border-purple-200">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Database size={18} className="text-purple-600" />
+              <span className="text-sm font-medium text-gray-700">Data Source:</span>
+              <button
+                onClick={() => setUseCache(false)}
+                className={`px-3 py-1 text-sm rounded-l-lg border ${
+                  !useCache 
+                    ? 'bg-blue-600 text-white border-blue-600' 
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Live API
+              </button>
+              <button
+                onClick={() => setUseCache(true)}
+                className={`px-3 py-1 text-sm rounded-r-lg border-t border-b border-r ${
+                  useCache 
+                    ? 'bg-purple-600 text-white border-purple-600' 
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Cached Data
+              </button>
+            </div>
+            {useCache && (
+              <span className="text-xs text-purple-600 bg-purple-100 px-2 py-1 rounded">
+                ⚡ Fast - No API limits
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {lastSyncTime && (
+              <span className="text-xs text-gray-500">
+                Last synced: {lastSyncTime.toLocaleString()}
+              </span>
+            )}
+            <button
+              onClick={handleSyncMetrics}
+              disabled={syncing}
+              className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
+            >
+              {syncing ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  Sync Metrics
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => navigate('/sync')}
+              className="text-sm text-purple-600 hover:text-purple-700 underline"
+            >
+              Sync Dashboard →
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="border-b border-gray-200 px-6 py-4">
         {/* Tab Navigation */}
         <div className="flex gap-1 mb-4 border-b border-gray-200">
@@ -781,6 +802,7 @@ export default function DataInsights({ apiUrl }) {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-medium text-gray-900">
                 {selectedCampaign === 'overview' ? 'Overview' : 'Campaign Performance Report'}
+                {useCache && <span className="text-sm text-purple-600 ml-2">(cached)</span>}
               </h2>
               
               <div className="flex gap-3 items-center">
@@ -814,7 +836,7 @@ export default function DataInsights({ apiUrl }) {
                 ))}
               </select>
 
-              {selectedAccount !== 'all' && (
+              {selectedAccount !== 'all' && !useCache && (
                 <>
                   <label className="text-sm font-medium text-gray-700 ml-4">Campaign:</label>
                   <select value={selectedCampaign} onChange={(e) => setSelectedCampaign(e.target.value)} disabled={loadingCampaigns || campaigns.length === 0} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50">
@@ -829,7 +851,7 @@ export default function DataInsights({ apiUrl }) {
 
               <span className="text-sm text-gray-500 ml-auto">
                 {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
-                {campaigns.length > 0 && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
+                {campaigns.length > 0 && !useCache && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
               </span>
             </div>
           </>
@@ -854,10 +876,27 @@ export default function DataInsights({ apiUrl }) {
 
           {loading && metricsData.length === 0 ? (
             <div className="flex items-center justify-center h-96">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">{useCache ? 'Loading cached data...' : 'Loading from API...'}</p>
+              </div>
             </div>
           ) : metricsData.length === 0 ? (
-            <div className="mx-6 mt-8 text-center text-gray-500">No data available for the selected period</div>
+            <div className="mx-6 mt-8 text-center text-gray-500">
+              {useCache ? (
+                <div>
+                  <p>No cached data available for the selected period.</p>
+                  <button 
+                    onClick={handleSyncMetrics}
+                    className="mt-2 text-purple-600 hover:text-purple-700 underline"
+                  >
+                    Sync metrics now
+                  </button>
+                </div>
+              ) : (
+                'No data available for the selected period'
+              )}
+            </div>
           ) : (
             <>
               <div className="border-b border-gray-200">
@@ -902,7 +941,10 @@ export default function DataInsights({ apiUrl }) {
 
               {selectedCampaign === 'overview' && metricsData.length > 0 && (
                 <div className="px-6 py-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">All Campaigns by Date</h2>
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                    All Campaigns by Date
+                    {useCache && <span className="text-sm font-normal text-purple-600 ml-2">(from cache)</span>}
+                  </h2>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">

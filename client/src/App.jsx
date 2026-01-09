@@ -1,5 +1,5 @@
 // App.jsx
-// Updated with Supabase authentication + Lazada account check
+// Updated with Supabase authentication + Lazada account check + Data Sync
 
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { useState, useEffect, createContext, useContext } from "react";
@@ -14,6 +14,7 @@ import Dashboard from "./pages/Dashboard";
 import OrderItems from "./pages/OrderItems";
 import Ffr from "./pages/Ffr";
 import DataInsights from "./pages/DataInsights";
+import SyncDashboard from "./components/SyncDashboard";
 
 // Components
 import Sidebar from "./components/Sidebar";
@@ -315,6 +316,17 @@ function AppRoutes() {
             </ProtectedRouteWithLazada>
           }
         />
+        
+        {/* Data Sync Dashboard */}
+        <Route
+          path="/sync"
+          element={
+            <ProtectedRouteWithLazada>
+              <SyncDashboard />
+            </ProtectedRouteWithLazada>
+          }
+        />
+        
         <Route
           path="/settings"
           element={
