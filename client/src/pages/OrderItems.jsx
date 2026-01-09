@@ -18,10 +18,12 @@ function OrderItems({ apiUrl }) {
   const [openDropdown, setOpenDropdown] = useState(null);
   const dropdownRef = useRef(null);
 
-  // Data source toggle
-  const [useCache, setUseCache] = useState(false);
+  // Sync state
   const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
+
+  // Prevent multiple fetches
+  const initialFetchDone = useRef(false);
 
   // Filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -46,7 +48,6 @@ function OrderItems({ apiUrl }) {
 
   // Statistics
   const [totalOrders, setTotalOrders] = useState(0);
-  const [loadingProgress, setLoadingProgress] = useState({});
 
   // Helper function to make authenticated API calls
   const authenticatedFetch = async (url, options = {}) => {
@@ -77,26 +78,6 @@ function OrderItems({ apiUrl }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch orders when accounts are loaded
-  useEffect(() => {
-    if (!accountsLoading && accounts.length === 0) {
-      navigate('/lazada-auth', { replace: true });
-      return;
-    }
-
-    if (!accountsLoading && accounts.length > 0) {
-      if (useCache) {
-        fetchCachedOrders();
-      } else {
-        fetchAllAccountsOrders(accounts);
-      }
-    }
-  }, [accountsLoading, accounts, navigate, useCache]);
-
-  useEffect(() => {
-    filterOrders();
-  }, [orders, searchQuery, statusFilter, accountFilter, dateTo]);
-
   // Fetch sync status on mount
   useEffect(() => {
     fetchSyncStatus();
@@ -113,11 +94,58 @@ function OrderItems({ apiUrl }) {
     }
   };
 
+  // Initialize - only run once when accounts load
+  useEffect(() => {
+    if (accountsLoading) return;
+    
+    if (accounts.length === 0) {
+      navigate('/lazada-auth', { replace: true });
+      return;
+    }
+
+    // Only fetch once on initial load
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true;
+      fetchCachedOrders();
+    }
+  }, [accountsLoading]); // Removed unnecessary dependencies
+
+  useEffect(() => {
+    filterOrders();
+  }, [orders, searchQuery, statusFilter, accountFilter, dateTo]);
+
+  // Sync orders to cache
+  const handleSyncOrders = async () => {
+    setSyncing(true);
+    setError(null);
+
+    try {
+      const daysBack = dateFrom 
+        ? Math.ceil((new Date() - new Date(dateFrom)) / (1000 * 60 * 60 * 24))
+        : 30;
+
+      const result = await SyncService.syncOrders(null, daysBack);
+      
+      if (result.success) {
+        setLastSyncTime(new Date());
+        alert(`Sync completed! ${result.data.total_synced} orders synced.`);
+        // Refresh data after sync
+        fetchCachedOrders();
+      } else {
+        throw new Error(result.error || 'Sync failed');
+      }
+    } catch (err) {
+      setError('Sync failed: ' + err.message);
+      alert('Sync failed: ' + err.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // Fetch cached orders from Supabase
   const fetchCachedOrders = async () => {
     setLoading(true);
     setError(null);
-    setOrders([]);
 
     try {
       const result = await CachedDataService.getOrders({
@@ -150,143 +178,10 @@ function OrderItems({ apiUrl }) {
         throw new Error(result.error || 'Failed to fetch cached orders');
       }
     } catch (err) {
-      setError('Failed to fetch cached orders: ' + err.message);
+      setError('Failed to fetch orders: ' + err.message);
       console.error(err);
     } finally {
       setLoading(false);
-    }
-  };
-
-  // Sync orders to cache
-  const handleSyncOrders = async () => {
-    setSyncing(true);
-    setError(null);
-
-    try {
-      const daysBack = dateFrom 
-        ? Math.ceil((new Date() - new Date(dateFrom)) / (1000 * 60 * 60 * 24))
-        : 30;
-
-      const result = await SyncService.syncOrders(null, daysBack);
-      
-      if (result.success) {
-        setLastSyncTime(new Date());
-        alert(`Sync completed! ${result.data.total_synced} orders synced.`);
-        
-        // If using cache, refresh the data
-        if (useCache) {
-          fetchCachedOrders();
-        }
-      } else {
-        throw new Error(result.error || 'Sync failed');
-      }
-    } catch (err) {
-      setError('Sync failed: ' + err.message);
-      alert('Sync failed: ' + err.message);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const fetchAllAccountsOrders = async (accountsList) => {
-    setLoading(true);
-    setError(null);
-    setOrders([]);
-
-    let createdAfter;
-    if (dateFrom) {
-      createdAfter = new Date(dateFrom).toISOString();
-    } else {
-      const defaultDate = new Date();
-      defaultDate.setDate(defaultDate.getDate() - 30);
-      createdAfter = defaultDate.toISOString();
-    }
-
-    const promises = accountsList.map(account =>
-      fetchAccountOrders(account, createdAfter)
-    );
-
-    try {
-      const results = await Promise.allSettled(promises);
-
-      const allOrders = [];
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          const accountOrders = result.value.map(order => ({
-            ...order,
-            _account_id: accountsList[index].id,
-            _account_name: accountsList[index].account_name || accountsList[index].seller_id,
-            _account_country: accountsList[index].country
-          }));
-          allOrders.push(...accountOrders);
-        } else {
-          console.error(`Failed to fetch orders for account ${accountsList[index].account_name}:`, result.reason);
-        }
-      });
-
-      allOrders.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-      setOrders(allOrders);
-      setTotalOrders(allOrders.length);
-    } catch (err) {
-      setError('Failed to fetch orders from some accounts');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchAccountOrders = async (account, createdAfter) => {
-    const accountId = account.id;
-    setLoadingProgress(prev => ({ ...prev, [accountId]: 'loading' }));
-
-    try {
-      let allOrders = [];
-      let offset = 0;
-      const limit = 100;
-      let hasMoreOrders = true;
-
-      while (hasMoreOrders) {
-        const response = await authenticatedFetch(
-          `${apiUrl}/lazada/orders?limit=${limit}&offset=${offset}&created_after=${encodeURIComponent(createdAfter)}&sort_by=created_at&sort_direction=DESC`,
-          {
-            headers: {
-              'X-Account-Id': accountId,
-            }
-          }
-        );
-
-        const data = await response.json();
-
-        if (response.ok && (data.code === '0' || data.code === 0)) {
-          const orders = data.data?.orders || [];
-          allOrders = [...allOrders, ...orders];
-
-          if (orders.length < limit) {
-            hasMoreOrders = false;
-          } else {
-            offset += limit;
-          }
-
-          setLoadingProgress(prev => ({
-            ...prev,
-            [accountId]: `loading (${allOrders.length})`
-          }));
-        } else {
-          setLoadingProgress(prev => ({ ...prev, [accountId]: 'error' }));
-          if (data.code === 'InvalidAccessToken' || response.status === 401) {
-            console.error(`Account ${account.account_name} has invalid token - may need re-authentication`);
-          }
-          hasMoreOrders = false;
-        }
-      }
-
-      setLoadingProgress(prev => ({ ...prev, [accountId]: 'success' }));
-      return allOrders;
-    } catch (err) {
-      setLoadingProgress(prev => ({ ...prev, [accountId]: 'error' }));
-      console.error(`Error fetching orders for ${account.account_name}:`, err);
-      return [];
     }
   };
 
@@ -368,12 +263,7 @@ function OrderItems({ apiUrl }) {
     setOrders([]);
     setSelectedOrders([]);
     setOrderItems([]);
-    refreshAccounts();
-    if (useCache) {
-      fetchCachedOrders();
-    } else if (accounts.length > 0) {
-      fetchAllAccountsOrders(accounts);
-    }
+    fetchCachedOrders();
   };
 
   const handleDateFilterApply = () => {
@@ -381,11 +271,7 @@ function OrderItems({ apiUrl }) {
       alert('Please select a "Date From" to fetch orders');
       return;
     }
-    if (useCache) {
-      fetchCachedOrders();
-    } else {
-      fetchAllAccountsOrders(accounts);
-    }
+    fetchCachedOrders();
   };
 
   const clearDateFilters = () => {
@@ -522,7 +408,8 @@ function OrderItems({ apiUrl }) {
 
   const uniqueStatuses = [...new Set(orders.flatMap(order => order.statuses || []))];
 
-  if (accountsLoading) {
+  // Only show full-page loading on initial load when we have no data
+  if (accountsLoading && !initialFetchDone.current && orders.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
@@ -535,49 +422,25 @@ function OrderItems({ apiUrl }) {
 
   return (
     <div>
-      {/* Data Source Toggle Banner */}
+      {/* Current Data Header */}
       <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-4 mb-4 border border-purple-200">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-700">Data Source:</span>
-              <button
-                onClick={() => setUseCache(false)}
-                className={`px-3 py-1 text-sm rounded-l-lg border ${
-                  !useCache 
-                    ? 'bg-blue-600 text-white border-blue-600' 
-                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                Live API
-              </button>
-              <button
-                onClick={() => setUseCache(true)}
-                className={`px-3 py-1 text-sm rounded-r-lg border-t border-b border-r ${
-                  useCache 
-                    ? 'bg-purple-600 text-white border-purple-600' 
-                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                Cached Data
-              </button>
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+            </svg>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Current Data</h2>
+              <p className="text-xs text-gray-500">
+                {lastSyncTime ? `Last synced: ${lastSyncTime.toLocaleString()}` : 'Not synced yet'}
+              </p>
             </div>
-            {useCache && (
-              <span className="text-xs text-purple-600 bg-purple-100 px-2 py-1 rounded">
-                ⚡ Fast - No API limits
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
-            {lastSyncTime && (
-              <span className="text-xs text-gray-500">
-                Last synced: {lastSyncTime.toLocaleString()}
-              </span>
-            )}
             <button
               onClick={handleSyncOrders}
               disabled={syncing}
-              className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
             >
               {syncing ? (
                 <>
@@ -592,7 +455,7 @@ function OrderItems({ apiUrl }) {
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
-                  Sync to Cache
+                  Sync Now
                 </>
               )}
             </button>
@@ -621,20 +484,6 @@ function OrderItems({ apiUrl }) {
                     <p className="text-sm font-medium text-gray-900">{account.account_name || account.seller_id}</p>
                     <p className="text-xs text-gray-500 uppercase">{account.country}</p>
                   </div>
-                  {!useCache && loadingProgress[account.id] === 'success' && (
-                    <span className="text-green-600 text-xs">✓</span>
-                  )}
-                  {!useCache && loadingProgress[account.id] && loadingProgress[account.id].toString().startsWith('loading') && (
-                    <span className="text-blue-600 text-xs flex items-center gap-1">
-                      <span className="animate-spin inline-block">⟳</span>
-                      {loadingProgress[account.id].toString().includes('(') && (
-                        <span>{loadingProgress[account.id].toString().match(/\((\d+)\)/)?.[1]}</span>
-                      )}
-                    </span>
-                  )}
-                  {!useCache && loadingProgress[account.id] === 'error' && (
-                    <span className="text-red-600 text-xs">✗</span>
-                  )}
                 </div>
               ))}
             </div>
@@ -650,9 +499,6 @@ function OrderItems({ apiUrl }) {
           <div className="text-right">
             <p className="text-2xl font-bold text-blue-600">{orders.length}</p>
             <p className="text-sm text-gray-600">Total Orders</p>
-            {useCache && (
-              <p className="text-xs text-purple-600">from cache</p>
-            )}
           </div>
         </div>
       </div>
@@ -663,7 +509,6 @@ function OrderItems({ apiUrl }) {
           <h1 className="text-2xl font-bold text-gray-900">All Orders</h1>
           <p className="text-gray-600 mt-1">
             {loading ? 'Loading...' : `${filteredOrders.length} orders from ${accounts.length} account(s)`}
-            {useCache && <span className="text-purple-600 ml-2">(cached)</span>}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -844,25 +689,22 @@ function OrderItems({ apiUrl }) {
                 <tr>
                   <td colSpan="7" className="px-6 py-12 text-center text-gray-500">
                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                    {useCache ? 'Loading cached orders...' : 'Loading orders from all accounts...'}
+                    Loading orders...
                   </td>
                 </tr>
               ) : paginatedOrders.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="px-6 py-12 text-center text-gray-500">
-                    {useCache ? (
-                      <div>
-                        <p>No cached orders found.</p>
-                        <button 
-                          onClick={handleSyncOrders}
-                          className="mt-2 text-purple-600 hover:text-purple-700 underline"
-                        >
-                          Sync orders now
-                        </button>
-                      </div>
-                    ) : (
-                      'No orders found'
-                    )}
+                    <div>
+                      <p>No orders found.</p>
+                      <button 
+                        onClick={handleSyncOrders}
+                        disabled={syncing}
+                        className="mt-2 text-purple-600 hover:text-purple-700 underline"
+                      >
+                        {syncing ? 'Syncing...' : 'Sync orders now'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : (

@@ -2,7 +2,7 @@
 // Updated AccountManager that syncs with backend database
 // Accounts persist across devices via Supabase
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { auth } from '../lib/supabase';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
@@ -225,16 +225,28 @@ export const AccountManager = {
 
 // React hook for using AccountManager
 export function useAccounts() {
-  const [accounts, setAccounts] = useState(AccountManager.getAccountsSync());
-  const [activeAccount, setActiveAccount] = useState(AccountManager.getActiveAccountSync());
-  const [loading, setLoading] = useState(true);
+  // Initialize with cached data
+  const cachedAccounts = AccountManager.getAccountsSync();
+  const cachedActive = AccountManager.getActiveAccountSync();
+  
+  const [accounts, setAccounts] = useState(cachedAccounts);
+  const [activeAccount, setActiveAccount] = useState(cachedActive);
+  // Only show loading if we don't have any cached data
+  const [loading, setLoading] = useState(cachedAccounts.length === 0);
   const [error, setError] = useState(null);
+  
+  // Track if initial fetch is done to prevent re-fetching on tab switch
+  const initialFetchDone = useRef(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (force = false) => {
+    // Only show loading spinner if we have no data
+    if (accounts.length === 0) {
+      setLoading(true);
+    }
+    
     setError(null);
     try {
-      const fetchedAccounts = await AccountManager.getAccounts(true);
+      const fetchedAccounts = await AccountManager.getAccounts(force);
       setAccounts(fetchedAccounts);
       
       const active = await AccountManager.getActiveAccount();
@@ -244,18 +256,37 @@ export function useAccounts() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accounts.length]);
 
+  // Only fetch once on mount - not on every render or tab switch
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (initialFetchDone.current) return;
+    initialFetchDone.current = true;
+    
+    // If we have cached data, don't show loading
+    if (cachedAccounts.length > 0) {
+      setLoading(false);
+      // Still fetch in background to update cache
+      AccountManager.getAccounts(false).then(fetchedAccounts => {
+        setAccounts(fetchedAccounts);
+        AccountManager.getActiveAccount().then(active => {
+          setActiveAccount(active);
+        });
+      }).catch(err => {
+        console.error('Background refresh failed:', err);
+      });
+    } else {
+      // No cached data, do full refresh with loading
+      refresh(true);
+    }
+  }, []); // Empty dependency array - only run on mount
 
   const switchAccount = useCallback(async (accountId) => {
     setLoading(true);
     try {
       const account = await AccountManager.setActiveAccount(accountId);
       setActiveAccount(account);
-      await refresh();
+      await refresh(true);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -267,7 +298,7 @@ export function useAccounts() {
     setLoading(true);
     try {
       await AccountManager.removeAccount(accountId);
-      await refresh();
+      await refresh(true);
     } catch (err) {
       setError(err.message);
     } finally {

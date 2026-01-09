@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Calendar, Download, RefreshCw, Info, Database } from 'lucide-react';
@@ -22,10 +22,13 @@ export default function DataInsights({ apiUrl }) {
   const [selectedCampaign, setSelectedCampaign] = useState('overview');
   const [loadingCampaigns, setLoadingCampaigns] = useState(false);
 
-  // Data source toggle
-  const [useCache, setUseCache] = useState(false);
+  // Sync state
   const [syncing, setSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(null);
+
+  // Prevent multiple fetches
+  const initialFetchDone = useRef(false);
+  const currentFetchController = useRef(null);
   
   const getDefaultDates = () => {
     const today = new Date();
@@ -40,24 +43,6 @@ export default function DataInsights({ apiUrl }) {
 
   const [dateRange, setDateRange] = useState(getDefaultDates());
   const [selectedAccount, setSelectedAccount] = useState('all');
-
-  // Helper function to make authenticated API calls
-  const authenticatedFetch = async (url, options = {}) => {
-    const token = await auth.getAccessToken();
-    
-    if (!token) {
-      throw new Error('Not authenticated');
-    }
-
-    return fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...options.headers,
-      },
-    });
-  };
 
   // Fetch sync status on mount
   useEffect(() => {
@@ -75,7 +60,7 @@ export default function DataInsights({ apiUrl }) {
     }
   };
 
-  // Sync campaign metrics to cache
+  // Sync campaign metrics
   const handleSyncMetrics = async () => {
     setSyncing(true);
     setError(null);
@@ -93,10 +78,8 @@ export default function DataInsights({ apiUrl }) {
       if (result.success) {
         setLastSyncTime(new Date());
         alert(`Sync completed! ${result.data.total_synced} metric records synced.`);
-        
-        if (useCache) {
-          fetchCachedMetrics();
-        }
+        // Refresh data after sync
+        fetchCachedMetrics();
       } else {
         throw new Error(result.error || 'Sync failed');
       }
@@ -110,9 +93,14 @@ export default function DataInsights({ apiUrl }) {
 
   // Fetch cached metrics from Supabase
   const fetchCachedMetrics = async () => {
+    // Cancel any ongoing fetch
+    if (currentFetchController.current) {
+      currentFetchController.current.abort();
+    }
+    currentFetchController.current = new AbortController();
+
     setLoading(true);
     setError(null);
-    setMetricsData([]);
 
     try {
       const result = await CachedDataService.getCampaignMetrics({
@@ -166,14 +154,39 @@ export default function DataInsights({ apiUrl }) {
         throw new Error(result.error || 'Failed to fetch cached metrics');
       }
     } catch (err) {
-      setError('Failed to fetch cached metrics: ' + err.message);
-      console.error(err);
+      if (err.name !== 'AbortError') {
+        setError('Failed to fetch data: ' + err.message);
+        console.error(err);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // Initialize when accounts are loaded
+  // Fetch cached campaigns
+  const fetchCachedCampaigns = async (accountId) => {
+    if (!accountId || accountId === 'all') {
+      setCampaigns([]);
+      return;
+    }
+
+    setLoadingCampaigns(true);
+    try {
+      const result = await CachedDataService.getCampaigns(accountId);
+      if (result.success) {
+        setCampaigns(result.data || []);
+      } else {
+        setCampaigns([]);
+      }
+    } catch (error) {
+      console.error('Error fetching cached campaigns:', error);
+      setCampaigns([]);
+    } finally {
+      setLoadingCampaigns(false);
+    }
+  };
+
+  // Initialize - only run once when accounts load
   useEffect(() => {
     if (accountsLoading) return;
     
@@ -181,327 +194,41 @@ export default function DataInsights({ apiUrl }) {
       navigate('/lazada-auth', { replace: true });
       return;
     }
-    
-    const arlaAccount = accounts.find(acc => 
-      (acc.account_name || acc.seller_id)?.toLowerCase().includes('arla') || 
-      acc.id?.toLowerCase().includes('arla')
-    );
-    
-    if (arlaAccount) {
-      setSelectedAccount(arlaAccount.id);
-    }
-    
-    if (useCache) {
+
+    // Only fetch once on initial load
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true;
+      
+      // Find arla account if exists
+      const arlaAccount = accounts.find(acc => 
+        (acc.account_name || acc.seller_id)?.toLowerCase().includes('arla') || 
+        acc.id?.toLowerCase().includes('arla')
+      );
+      
+      if (arlaAccount) {
+        setSelectedAccount(arlaAccount.id);
+      }
+      
       fetchCachedMetrics();
-    } else {
-      fetchAllAccountsReports(accounts);
     }
-  }, [accountsLoading, accounts, navigate]);
+  }, [accountsLoading]); // Removed unnecessary dependencies
 
+  // Fetch campaigns when account changes (but not on initial mount)
+  const campaignsFetchedFor = useRef(null);
+  
   useEffect(() => {
-    if (accounts.length > 0 && selectedCampaign === 'overview') {
-      if (useCache) {
-        fetchCachedMetrics();
-      } else {
-        fetchAllAccountsReports(accounts);
-      }
-    }
-  }, [dateRange, useCache]);
-
-  useEffect(() => {
-    if (selectedAccount && selectedAccount !== 'all') {
-      fetchCampaigns(selectedAccount);
-    } else {
-      setCampaigns([]);
-      setSelectedCampaign('overview');
-    }
+    // Skip if same account or initial load hasn't happened
+    if (!initialFetchDone.current) return;
+    if (campaignsFetchedFor.current === selectedAccount) return;
+    
+    campaignsFetchedFor.current = selectedAccount;
+    fetchCachedCampaigns(selectedAccount);
   }, [selectedAccount]);
 
-  useEffect(() => {
-    if (selectedCampaign && selectedCampaign !== 'overview' && accounts.length > 0) {
-      fetchCampaignPrePlacementData();
-    }
-  }, [selectedCampaign, dateRange]);
-
-  const fetchCampaigns = async (accountId) => {
-    setLoadingCampaigns(true);
-    try {
-      const account = accounts.find(acc => acc.id === accountId);
-      if (!account) return;
-
-      const response = await authenticatedFetch(
-        `${apiUrl}/lazada/sponsor/solutions/campaign/getCampaignList?pageNo=1&pageSize=100`,
-        {
-          headers: {
-            'X-Account-Id': accountId,
-          }
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok && (data.code === '0' || data.code === 0)) {
-        setCampaigns(data.result?.campaigns || []);
-      } else {
-        console.error('Failed to fetch campaigns:', data);
-        setCampaigns([]);
-      }
-    } catch (error) {
-      console.error('Error fetching campaigns:', error);
-      setCampaigns([]);
-    } finally {
-      setLoadingCampaigns(false);
-    }
+  // Handle date range apply
+  const handleApplyDateRange = () => {
+    fetchCachedMetrics();
   };
-
-  const fetchCampaignPrePlacementData = async () => {
-    if (!selectedCampaign || selectedCampaign === 'overview') return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const account = accounts.find(acc => acc.id === selectedAccount);
-      if (!account) return;
-
-      const selectedCampaignData = campaigns.find(c => c.campaignId === selectedCampaign);
-
-      const params = new URLSearchParams({
-        campaignId: selectedCampaign,
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate,
-        productType: 'ALL',
-        sort: 'impressions',
-        order: 'DESC',
-        pageNo: '1',
-        pageSize: '100',
-        useRtTable: 'true'
-      });
-
-      if (selectedCampaignData?.campaignName) {
-        params.append('campaignName', selectedCampaignData.campaignName);
-      }
-
-      const response = await authenticatedFetch(
-        `${apiUrl}/lazada/sponsor/solutions/report/getReportCampaignOnPrePlacement?${params}`,
-        {
-          headers: {
-            'X-Account-Id': selectedAccount,
-          }
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok && (data.code === '0' || data.code === 0)) {
-        const campaigns = data.result?.result || [];
-        
-        const processedMetrics = campaigns.map(campaign => ({
-          account_id: account.id,
-          account_name: account.account_name || account.seller_id,
-          account_country: account.country,
-          campaignName: campaign.campaignName || 'Unknown',
-          campaignId: campaign.campaignId,
-          productType: campaign.productType,
-          campaignType: campaign.campaignType,
-          campaignObjective: campaign.campaignObjective,
-          spend: parseFloat(campaign.spend || 0),
-          revenue: parseFloat(campaign.storeRevenue || campaign.productRevenue || 0),
-          storeRevenue: parseFloat(campaign.storeRevenue || 0),
-          productRevenue: parseFloat(campaign.productRevenue || 0),
-          orders: parseInt(campaign.storeOrders || campaign.productOrders || 0),
-          storeOrders: parseInt(campaign.storeOrders || 0),
-          productOrders: parseInt(campaign.productOrders || 0),
-          unitsSold: parseInt(campaign.storeUnitSold || campaign.productUnitSold || 0),
-          storeUnitSold: parseInt(campaign.storeUnitSold || 0),
-          productUnitSold: parseInt(campaign.productUnitSold || 0),
-          roi: parseFloat(campaign.storeRoi || 0),
-          impressions: parseInt(campaign.impressions || 0),
-          clicks: parseInt(campaign.clicks || 0),
-          ctr: parseFloat(campaign.ctr || 0),
-          cpc: parseFloat(campaign.cpc || 0),
-          cvr: parseFloat(campaign.storeCvr || campaign.productCvr || 0),
-          storeCvr: parseFloat(campaign.storeCvr || 0),
-          productCvr: parseFloat(campaign.productCvr || 0),
-          a2c: parseInt(campaign.storeA2c || campaign.productA2c || 0),
-          storeA2c: parseInt(campaign.storeA2c || 0),
-          productA2c: parseInt(campaign.productA2c || 0),
-          dayBudget: parseFloat(campaign.dayBudget || 0),
-          firstImpShare: campaign.firstImpShare,
-          timeline: []
-        }));
-
-        setMetricsData(processedMetrics);
-        setRawResponses({ [account.id]: data });
-        
-        const chartTimeline = processedMetrics.map(campaign => ({
-          date: `${campaign.campaignName} (${campaign.productType})`,
-          Spend: campaign.spend,
-          ROAS: campaign.roi
-        }));
-        
-        setChartData(chartTimeline);
-      } else {
-        setError(`Failed to fetch campaign data: ${data.message}`);
-      }
-    } catch (err) {
-      setError('Failed to fetch campaign pre-placement data');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchAllAccountsReports = async (accountsList) => {
-    if (selectedCampaign !== 'overview') return;
-
-    setLoading(true);
-    setError(null);
-    setMetricsData([]);
-    setChartData([]);
-    setRawResponses({});
-    
-    try {
-      const allCampaigns = [];
-      const allRawResponses = {};
-      
-      const start = new Date(dateRange.startDate);
-      const end = new Date(dateRange.endDate);
-      const dateList = [];
-      
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        dateList.push(new Date(d).toISOString().split('T')[0]);
-      }
-      
-      for (const account of accountsList) {
-        for (const date of dateList) {
-          const params = new URLSearchParams({
-            startDate: date,
-            endDate: date,
-            pageNo: '1',
-            pageSize: '1000'
-          });
-
-          const response = await authenticatedFetch(
-            `${apiUrl}/lazada/sponsor/solutions/report/getDiscoveryReportCampaign?${params}`,
-            {
-              headers: {
-                'X-Account-Id': account.id,
-              }
-            }
-          );
-
-          const data = await response.json();
-
-          if (response.ok && (data.code === '0' || data.code === 0)) {
-            const campaigns = data.result?.result || [];
-            
-            const accountName = account.account_name || account.seller_id;
-            console.log(`${date} - ${accountName}: Found ${campaigns.length} campaigns`);
-            
-            campaigns.forEach(campaign => {
-              allCampaigns.push({
-                date: date,
-                account_id: account.id,
-                account_name: accountName,
-                account_country: account.country,
-                campaignName: campaign.campaignName || 'Unknown',
-                campaignId: campaign.campaignId,
-                campaignType: campaign.campaignType,
-                campaignObjective: campaign.campaignObjective,
-                dayBudget: parseFloat(campaign.dayBudget || 0),
-                spend: parseFloat(campaign.spend || 0),
-                revenue: parseFloat(campaign.storeRevenue || 0),
-                storeRevenue: parseFloat(campaign.storeRevenue || 0),
-                productRevenue: parseFloat(campaign.productRevenue || 0),
-                orders: parseInt(campaign.storeOrders || 0),
-                storeOrders: parseInt(campaign.storeOrders || 0),
-                productOrders: parseInt(campaign.productOrders || 0),
-                unitsSold: parseInt(campaign.storeUnitSold || 0),
-                storeUnitSold: parseInt(campaign.storeUnitSold || 0),
-                productUnitSold: parseInt(campaign.productUnitSold || 0),
-                roi: parseFloat(campaign.storeRoi || 0),
-                impressions: parseInt(campaign.impressions || 0),
-                clicks: parseInt(campaign.clicks || 0),
-                ctr: parseFloat(campaign.ctr || 0),
-                cpc: parseFloat(campaign.cpc || 0),
-                storeCvr: parseFloat(campaign.storeCvr || 0),
-                productCvr: parseFloat(campaign.productCvr || 0),
-                storeA2c: parseInt(campaign.storeA2c || 0),
-                productA2c: parseInt(campaign.productA2c || 0),
-                timeline: []
-              });
-            });
-            
-            if (!allRawResponses[account.id]) {
-              allRawResponses[account.id] = [];
-            }
-            allRawResponses[account.id].push({ date, data });
-          }
-        }
-      }
-      
-      allCampaigns.sort((a, b) => {
-        const dateCompare = new Date(b.date) - new Date(a.date);
-        if (dateCompare !== 0) return dateCompare;
-        return (a.campaignName || '').localeCompare(b.campaignName || '');
-      });
-      
-      setMetricsData(allCampaigns);
-      setRawResponses(allRawResponses);
-      setChartData([]);
-    } catch (err) {
-      setError('Failed to fetch campaign data');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateChartData = (metrics, accountFilter) => {
-    const filteredMetrics = accountFilter === 'all' 
-      ? metrics 
-      : metrics.filter(m => m.account_id === accountFilter);
-
-    if (filteredMetrics.length === 0) {
-      setChartData([]);
-      return;
-    }
-
-    const timelineDataByDate = {};
-    
-    filteredMetrics.forEach(metric => {
-      if (metric.timeline) {
-        metric.timeline.forEach(item => {
-          if (!timelineDataByDate[item.date]) {
-            timelineDataByDate[item.date] = { 
-              date: item.date, 
-              spend: 0, 
-              roi: 0,
-              count: 0 
-            };
-          }
-          timelineDataByDate[item.date].spend += item.spend || 0;
-          timelineDataByDate[item.date].roi += item.roi || 0;
-          timelineDataByDate[item.date].count += 1;
-        });
-      }
-    });
-    
-    const chartTimeline = Object.values(timelineDataByDate).map(item => ({
-      date: item.date,
-      Spend: item.spend,
-      ROAS: item.count > 0 ? item.roi / item.count : 0
-    })).sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    setChartData(chartTimeline);
-  };
-
-  useEffect(() => {
-    if (metricsData.length > 0 && selectedCampaign === 'overview') {
-      updateChartData(metricsData, selectedAccount);
-    }
-  }, [selectedAccount]);
 
   const handleDownloadCSV = () => {
     const filteredData = selectedAccount === 'all' 
@@ -513,41 +240,29 @@ export default function DataInsights({ apiUrl }) {
       return;
     }
 
-    let headers = [];
-    let rows = [];
-
-    if (selectedCampaign === 'overview') {
-      headers = ['Date', 'Campaign Name', 'Budget', 'Spend', 'Revenue', 'Orders', 'ROI', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Units Sold'];
-      
-      rows = filteredData.map(campaign => [
-        campaign.date,
-        campaign.campaignName || '',
-        campaign.dayBudget.toFixed(0),
-        campaign.spend.toFixed(2),
-        campaign.storeRevenue.toFixed(2),
-        campaign.storeOrders,
-        campaign.roi.toFixed(2),
-        campaign.impressions,
-        campaign.clicks,
-        campaign.ctr.toFixed(2) + '%',
-        campaign.cpc.toFixed(2),
-        campaign.storeUnitSold
-      ]);
-    } else {
-      headers = ['Campaign Name', 'Product Type', 'Campaign Type', 'Spend', 'Store Revenue', 'Product Revenue', 'Store ROAS', 'Store Orders', 'Product Orders', 'Store Units', 'Product Units', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Store CVR', 'Product CVR', 'Store A2C', 'Product A2C', 'Day Budget'];
-
-      rows = filteredData.map(metric => [
-        metric.campaignName || '', metric.productType || '', metric.campaignType || '', metric.spend.toFixed(2), metric.storeRevenue.toFixed(2), metric.productRevenue.toFixed(2), metric.roi.toFixed(2), metric.storeOrders, metric.productOrders, metric.storeUnitSold, metric.productUnitSold, metric.impressions, metric.clicks, metric.ctr.toFixed(2) + '%', metric.cpc.toFixed(2), (metric.storeCvr * 100).toFixed(2) + '%', (metric.productCvr * 100).toFixed(2) + '%', metric.storeA2c, metric.productA2c, metric.dayBudget.toFixed(2)
-      ]);
-    }
+    const headers = ['Date', 'Campaign Name', 'Budget', 'Spend', 'Revenue', 'Orders', 'ROI', 'Impressions', 'Clicks', 'CTR', 'CPC', 'Units Sold'];
+    
+    const rows = filteredData.map(campaign => [
+      campaign.date,
+      campaign.campaignName || '',
+      campaign.dayBudget.toFixed(0),
+      campaign.spend.toFixed(2),
+      campaign.storeRevenue.toFixed(2),
+      campaign.storeOrders,
+      campaign.roi.toFixed(2),
+      campaign.impressions,
+      campaign.clicks,
+      campaign.ctr.toFixed(2) + '%',
+      campaign.cpc.toFixed(2),
+      campaign.storeUnitSold
+    ]);
 
     const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     
-    const campaignName = selectedCampaign !== 'overview' ? campaigns.find(c => c.campaignId === selectedCampaign)?.campaignName || selectedCampaign : 'overview';
-    const fileName = selectedAccount === 'all' ? `all_accounts_${campaignName}_${dateRange.startDate}_to_${dateRange.endDate}.csv` : `${selectedAccount}_${campaignName}_${dateRange.startDate}_to_${dateRange.endDate}.csv`;
+    const fileName = `campaign_metrics_${dateRange.startDate}_to_${dateRange.endDate}.csv`;
     
     link.setAttribute('href', url);
     link.setAttribute('download', fileName);
@@ -558,16 +273,7 @@ export default function DataInsights({ apiUrl }) {
   };
 
   const handleRefresh = () => {
-    refreshAccounts();
-    if (selectedCampaign === 'overview') {
-      if (useCache) {
-        fetchCachedMetrics();
-      } else {
-        fetchAllAccountsReports(accounts);
-      }
-    } else {
-      fetchCampaignPrePlacementData();
-    }
+    fetchCachedMetrics();
   };
 
   const handleDateChange = (field, value) => {
@@ -580,8 +286,6 @@ export default function DataInsights({ apiUrl }) {
     if (filteredData.length === 0) {
       return { totalSpend: 0, totalRevenue: 0, totalOrders: 0, totalUnitsSold: 0, totalImpressions: 0, totalClicks: 0, avgROI: 0, avgCTR: 0, avgCPC: 0, avgSpendChange: 0, avgRevenueChange: 0, avgOrdersChange: 0, avgUnitsSoldChange: 0, avgROIChange: 0 };
     }
-
-    console.log('📊 Calculating totals from', filteredData.length, 'rows');
 
     const dailyTotals = {};
     
@@ -610,10 +314,6 @@ export default function DataInsights({ apiUrl }) {
       dailyTotals[date].campaigns.push(campaign.campaignName);
     });
 
-    Object.entries(dailyTotals).sort().forEach(([date, data]) => {
-      console.log(`  ${date}: ${data.orders} orders (from ${data.campaigns.length} campaigns: ${data.campaigns.join(', ')})`);
-    });
-
     const totals = Object.values(dailyTotals).reduce((acc, day) => ({
       totalSpend: acc.totalSpend + day.spend,
       totalRevenue: acc.totalRevenue + day.revenue,
@@ -632,12 +332,9 @@ export default function DataInsights({ apiUrl }) {
       totalA2c: 0
     });
 
-    console.log('✅ TOTALS:', totals);
-
     const avgCTR = totals.totalImpressions > 0 ? (totals.totalClicks / totals.totalImpressions) * 100 : 0;
     const avgCPC = totals.totalClicks > 0 ? totals.totalSpend / totals.totalClicks : 0;
     const avgROI = totals.totalSpend > 0 ? totals.totalRevenue / totals.totalSpend : 0;
-    const avgCVR = totals.totalClicks > 0 ? (totals.totalOrders / totals.totalClicks) * 100 : 0;
 
     return { 
       totalSpend: totals.totalSpend,
@@ -650,7 +347,6 @@ export default function DataInsights({ apiUrl }) {
       avgROI: avgROI,
       avgCTR: avgCTR,
       avgCPC: avgCPC,
-      avgCVR: avgCVR,
       avgSpendChange: 0,
       avgRevenueChange: 0,
       avgOrdersChange: 0,
@@ -685,7 +381,8 @@ export default function DataInsights({ apiUrl }) {
     );
   };
 
-  if (accountsLoading) {
+  // Only show full-page loading on initial load when we have no data
+  if (accountsLoading && !initialFetchDone.current && metricsData.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
@@ -698,50 +395,23 @@ export default function DataInsights({ apiUrl }) {
 
   return (
     <div className="max-w-7xl mx-auto bg-white min-h-screen">
-      {/* Data Source Toggle Banner */}
+      {/* Current Data Header */}
       <div className="bg-gradient-to-r from-purple-50 to-blue-50 p-4 border-b border-purple-200">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <Database size={18} className="text-purple-600" />
-              <span className="text-sm font-medium text-gray-700">Data Source:</span>
-              <button
-                onClick={() => setUseCache(false)}
-                className={`px-3 py-1 text-sm rounded-l-lg border ${
-                  !useCache 
-                    ? 'bg-blue-600 text-white border-blue-600' 
-                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                Live API
-              </button>
-              <button
-                onClick={() => setUseCache(true)}
-                className={`px-3 py-1 text-sm rounded-r-lg border-t border-b border-r ${
-                  useCache 
-                    ? 'bg-purple-600 text-white border-purple-600' 
-                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                Cached Data
-              </button>
+          <div className="flex items-center gap-3">
+            <Database size={20} className="text-purple-600" />
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Current Data</h2>
+              <p className="text-xs text-gray-500">
+                {lastSyncTime ? `Last synced: ${lastSyncTime.toLocaleString()}` : 'Not synced yet'}
+              </p>
             </div>
-            {useCache && (
-              <span className="text-xs text-purple-600 bg-purple-100 px-2 py-1 rounded">
-                ⚡ Fast - No API limits
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-3">
-            {lastSyncTime && (
-              <span className="text-xs text-gray-500">
-                Last synced: {lastSyncTime.toLocaleString()}
-              </span>
-            )}
             <button
               onClick={handleSyncMetrics}
               disabled={syncing}
-              className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 disabled:opacity-50 transition"
             >
               {syncing ? (
                 <>
@@ -751,7 +421,7 @@ export default function DataInsights({ apiUrl }) {
               ) : (
                 <>
                   <RefreshCw className="w-4 h-4" />
-                  Sync Metrics
+                  Sync Now
                 </>
               )}
             </button>
@@ -800,10 +470,7 @@ export default function DataInsights({ apiUrl }) {
         {activeTab === 'overview' && (
           <>
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-medium text-gray-900">
-                {selectedCampaign === 'overview' ? 'Overview' : 'Campaign Performance Report'}
-                {useCache && <span className="text-sm text-purple-600 ml-2">(cached)</span>}
-              </h2>
+              <h2 className="text-lg font-medium text-gray-900">Overview</h2>
               
               <div className="flex gap-3 items-center">
                 <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded">
@@ -812,6 +479,14 @@ export default function DataInsights({ apiUrl }) {
                   <span className="text-gray-500">-</span>
                   <input type="date" value={dateRange.endDate} onChange={(e) => handleDateChange('endDate', e.target.value)} className="text-sm border-none focus:ring-0 p-0" />
                 </div>
+
+                <button 
+                  onClick={handleApplyDateRange} 
+                  disabled={loading}
+                  className="px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  Apply
+                </button>
 
                 <button onClick={handleRefresh} disabled={loading} className="px-3 py-2 text-gray-700 hover:bg-gray-100 rounded transition-colors">
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -836,22 +511,28 @@ export default function DataInsights({ apiUrl }) {
                 ))}
               </select>
 
-              {selectedAccount !== 'all' && !useCache && (
+              {selectedAccount !== 'all' && campaigns.length > 0 && (
                 <>
                   <label className="text-sm font-medium text-gray-700 ml-4">Campaign:</label>
-                  <select value={selectedCampaign} onChange={(e) => setSelectedCampaign(e.target.value)} disabled={loadingCampaigns || campaigns.length === 0} className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50">
-                    <option value="overview">Overview (All Campaigns)</option>
+                  <select 
+                    value={selectedCampaign} 
+                    onChange={(e) => setSelectedCampaign(e.target.value)} 
+                    disabled={loadingCampaigns} 
+                    className="px-3 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white min-w-[200px] disabled:opacity-50"
+                  >
+                    <option value="overview">All Campaigns</option>
                     {campaigns.map((campaign) => (
-                      <option key={campaign.campaignId} value={campaign.campaignId}>{campaign.campaignName || campaign.campaignId}</option>
+                      <option key={campaign.campaign_id} value={campaign.campaign_id}>
+                        {campaign.campaign_name || campaign.campaign_id}
+                      </option>
                     ))}
                   </select>
-                  {loadingCampaigns && <span className="text-xs text-gray-500">Loading campaigns...</span>}
+                  {loadingCampaigns && <span className="text-xs text-gray-500">Loading...</span>}
                 </>
               )}
 
               <span className="text-sm text-gray-500 ml-auto">
                 {accounts.length} account{accounts.length !== 1 ? 's' : ''} connected
-                {campaigns.length > 0 && !useCache && ` • ${campaigns.length} campaign${campaigns.length !== 1 ? 's' : ''}`}
               </span>
             </div>
           </>
@@ -863,14 +544,10 @@ export default function DataInsights({ apiUrl }) {
         <>
           {error && <div className="mx-6 mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{error}</div>}
 
-          {showRawData && Object.keys(rawResponses).length > 0 && (
+          {showRawData && metricsData.length > 0 && (
             <div className="mx-6 mt-4 bg-gray-900 text-green-400 rounded p-4 overflow-auto max-h-96">
-              {Object.entries(rawResponses).map(([accountId, data]) => (
-                <div key={accountId} className="mb-4">
-                  <div className="text-yellow-400 font-semibold mb-2">{data.account_name || accountId} ({data.account_country || 'N/A'})</div>
-                  <pre className="text-xs">{JSON.stringify(data.fullResponse || data, null, 2)}</pre>
-                </div>
-              ))}
+              <pre className="text-xs">{JSON.stringify(metricsData.slice(0, 10), null, 2)}</pre>
+              {metricsData.length > 10 && <p className="text-yellow-400 mt-2">... and {metricsData.length - 10} more records</p>}
             </div>
           )}
 
@@ -878,24 +555,23 @@ export default function DataInsights({ apiUrl }) {
             <div className="flex items-center justify-center h-96">
               <div className="text-center">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                <p className="text-gray-600">{useCache ? 'Loading cached data...' : 'Loading from API...'}</p>
+                <p className="text-gray-600">Loading data...</p>
               </div>
             </div>
-          ) : metricsData.length === 0 ? (
+          ) : !loading && metricsData.length === 0 ? (
             <div className="mx-6 mt-8 text-center text-gray-500">
-              {useCache ? (
-                <div>
-                  <p>No cached data available for the selected period.</p>
-                  <button 
-                    onClick={handleSyncMetrics}
-                    className="mt-2 text-purple-600 hover:text-purple-700 underline"
-                  >
-                    Sync metrics now
-                  </button>
-                </div>
-              ) : (
-                'No data available for the selected period'
-              )}
+              <div className="py-12">
+                <Database size={48} className="mx-auto text-gray-300 mb-4" />
+                <p className="text-lg font-medium text-gray-600 mb-2">No data available</p>
+                <p className="text-sm text-gray-500 mb-4">Sync your campaign metrics to see data here.</p>
+                <button 
+                  onClick={handleSyncMetrics}
+                  disabled={syncing}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                >
+                  {syncing ? 'Syncing...' : 'Sync Now'}
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -912,39 +588,9 @@ export default function DataInsights({ apiUrl }) {
                 </div>
               </div>
 
-              {chartData.length > 0 && selectedCampaign !== 'overview' && (
+              {metricsData.length > 0 && (
                 <div className="px-6 py-6">
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={chartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} angle={-45} textAnchor="end" height={100} tickFormatter={(value) => {
-                        return value.length > 30 ? value.substring(0, 27) + '...' : value;
-                      }} />
-                      <YAxis yAxisId="left" orientation="left" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'Spend', angle: -90, position: 'insideLeft', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
-                      <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} label={{ value: 'ROAS', angle: 90, position: 'insideRight', style: { fill: '#6b7280', fontSize: 12 } }} domain={[0, 'auto']} />
-                      <Tooltip contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.95)', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '12px', padding: '8px 12px' }} formatter={(value, name) => {
-                        if (name === 'Spend') {
-                          return ['PHP ' + parseFloat(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 'Spend'];
-                        }
-                        if (name === 'ROAS') {
-                          return [parseFloat(value).toFixed(2), 'ROAS'];
-                        }
-                        return [value, name];
-                      }} />
-                      <Legend verticalAlign="bottom" height={36} iconType="line" wrapperStyle={{ fontSize: '12px', paddingTop: '20px' }} />
-                      <Line yAxisId="left" type="monotone" dataKey="Spend" stroke="#60a5fa" strokeWidth={2} dot activeDot={{ r: 4, fill: '#60a5fa' }} />
-                      <Line yAxisId="right" type="monotone" dataKey="ROAS" stroke="#c084fc" strokeWidth={2} dot activeDot={{ r: 4, fill: '#c084fc' }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {selectedCampaign === 'overview' && metricsData.length > 0 && (
-                <div className="px-6 py-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                    All Campaigns by Date
-                    {useCache && <span className="text-sm font-normal text-purple-600 ml-2">(from cache)</span>}
-                  </h2>
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">All Campaigns by Date</h2>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
@@ -964,7 +610,11 @@ export default function DataInsights({ apiUrl }) {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {(selectedAccount === 'all' ? metricsData : metricsData.filter(m => m.account_id === selectedAccount)).map((campaign, index) => (
+                        {(selectedAccount === 'all' 
+                          ? metricsData 
+                          : metricsData.filter(m => m.account_id === selectedAccount)
+                        ).filter(m => selectedCampaign === 'overview' || m.campaignId === selectedCampaign)
+                        .map((campaign, index) => (
                           <tr key={index} className="hover:bg-gray-50">
                             <td className="px-4 py-3 text-sm text-gray-900 whitespace-nowrap">{campaign.date}</td>
                             <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
@@ -988,61 +638,9 @@ export default function DataInsights({ apiUrl }) {
                   </div>
                 </div>
               )}
-
-              {selectedCampaign !== 'overview' && metricsData.length > 0 && (
-                <div className="px-6 py-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Campaign Performance Details</h2>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Spend</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store Rev</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Product Rev</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ROAS</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Impr</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Clicks</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CTR</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">CPC</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Store CVR</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Budget</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {metricsData.map((metric, index) => (
-                          <tr key={index} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">{metric.campaignName}</td>
-                            <td className="px-4 py-3 text-sm text-gray-600">{metric.productType}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-900 font-semibold">{metric.spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.storeRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-900">{metric.productRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-sm text-right text-blue-600 font-bold">{metric.roi.toFixed(2)}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.impressions.toLocaleString()}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.clicks.toLocaleString()}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.ctr.toFixed(2)}%</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.cpc.toFixed(2)}</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{(metric.storeCvr * 100).toFixed(2)}%</td>
-                            <td className="px-4 py-3 text-sm text-right text-gray-600">{metric.dayBudget.toFixed(0)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
             </>
           )}
         </>
-      )}
-
-      {activeTab === 'new-tab' && (
-        <div className="px-6 py-12 text-center">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">New Tab Content</h2>
-          <p className="text-gray-600">This is your new tab between Overview and Data Charts.</p>
-          <p className="text-gray-500 mt-2">Add your custom content here!</p>
-        </div>
       )}
 
       {activeTab === 'data-charts' && (
