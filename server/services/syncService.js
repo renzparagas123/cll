@@ -4,7 +4,14 @@
 // ============================================
 
 import { supabaseAdmin } from '../utils/supabase.js';
-import { refreshLazadaToken, makeLazadaRequest } from '../utils/lazadaAuth.js';
+import LazadaAuth from '../utils/lazadaAuth.js';
+
+// Initialize Lazada Auth (same as server.js)
+const lazadaAuth = new LazadaAuth(
+  process.env.LAZADA_APP_KEY,
+  process.env.LAZADA_APP_SECRET,
+  process.env.LAZADA_API_URL
+);
 
 // ============================================
 // HELPER FUNCTIONS
@@ -34,21 +41,25 @@ async function getFreshToken(account) {
   // Refresh if expires in less than 1 hour
   if (expiresAt <= new Date(now.getTime() + 60 * 60 * 1000)) {
     console.log(`🔄 Refreshing token for account ${account.account_name || account.seller_id}`);
-    const newTokens = await refreshLazadaToken(account.refresh_token);
+    const tokenData = await lazadaAuth.refreshAccessToken(account.refresh_token);
+    
+    if (tokenData.code !== '0' && tokenData.code !== 0) {
+      throw new Error(`Token refresh failed: ${tokenData.message}`);
+    }
     
     // Update tokens in database
     await supabaseAdmin
       .from('lazada_accounts')
       .update({
-        access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token,
-        expires_in: newTokens.expires_in,
-        token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_in: tokenData.expires_in,
+        token_expires_at: new Date(Date.now() + tokenData.expires_in * 1000).toISOString(),
         updated_at: new Date().toISOString()
       })
       .eq('id', account.id);
     
-    return newTokens.access_token;
+    return tokenData.access_token;
   }
   
   return account.access_token;
@@ -119,14 +130,17 @@ export async function syncOrders(userId, accountId = null, options = {}) {
       while (hasMore) {
         console.log(`  Fetching orders for ${account.account_name || account.seller_id}, offset: ${offset}`);
         
-        const response = await makeLazadaRequest('/orders/get', {
-          access_token: accessToken,
-          created_after: createdAfter.toISOString(),
-          limit,
-          offset,
-          sort_by: 'created_at',
-          sort_direction: 'DESC'
-        });
+        const response = await lazadaAuth.makeRequest(
+          '/orders/get',
+          accessToken,
+          {
+            created_after: createdAfter.toISOString(),
+            limit,
+            offset,
+            sort_by: 'created_at',
+            sort_direction: 'DESC'
+          }
+        );
         
         if (response.code === '0' || response.code === 0) {
           const orders = response.data?.orders || [];
@@ -233,11 +247,14 @@ export async function syncCampaigns(userId, accountId = null) {
     try {
       const accessToken = await getFreshToken(account);
       
-      const response = await makeLazadaRequest('/sponsor/solutions/campaign/getCampaignList', {
-        access_token: accessToken,
-        pageNo: 1,
-        pageSize: 1000
-      });
+      const response = await lazadaAuth.makeRequest(
+        '/sponsor/solutions/campaign/getCampaignList',
+        accessToken,
+        {
+          pageNo: 1,
+          pageSize: 1000
+        }
+      );
       
       if (response.code === '0' || response.code === 0) {
         const campaigns = response.result?.campaigns || [];
@@ -345,13 +362,16 @@ export async function syncCampaignMetrics(userId, accountId = null, options = {}
       for (const date of dateList) {
         console.log(`  Fetching metrics for ${account.account_name || account.seller_id} - ${date}`);
         
-        const response = await makeLazadaRequest('/sponsor/solutions/report/getDiscoveryReportCampaign', {
-          access_token: accessToken,
-          startDate: date,
-          endDate: date,
-          pageNo: 1,
-          pageSize: 1000
-        });
+        const response = await lazadaAuth.makeRequest(
+          '/sponsor/solutions/report/getDiscoveryReportCampaign',
+          accessToken,
+          {
+            startDate: date,
+            endDate: date,
+            pageNo: 1,
+            pageSize: 1000
+          }
+        );
         
         if (response.code === '0' || response.code === 0) {
           const campaigns = response.result?.result || [];
@@ -497,45 +517,4 @@ export async function syncAllData(userId, options = {}) {
   console.log(`✅ Full sync completed in ${results.duration_ms}ms`);
   
   return results;
-}
-
-// ============================================
-// SCHEDULED SYNC FOR ALL USERS
-// ============================================
-export async function runScheduledSync() {
-  console.log('⏰ Running scheduled sync for all users...');
-  
-  // Get all users with auto_sync_enabled
-  const { data: settings, error } = await supabaseAdmin
-    .from('sync_settings')
-    .select('user_id')
-    .eq('auto_sync_enabled', true);
-  
-  if (error) {
-    console.error('Failed to get sync settings:', error);
-    return;
-  }
-  
-  // Also get users who don't have sync_settings yet (default enabled)
-  const { data: allAccounts } = await supabaseAdmin
-    .from('lazada_accounts')
-    .select('user_id')
-    .eq('is_active', true);
-  
-  const userIds = [...new Set([
-    ...(settings || []).map(s => s.user_id),
-    ...(allAccounts || []).map(a => a.user_id)
-  ])];
-  
-  console.log(`Found ${userIds.length} users to sync`);
-  
-  for (const userId of userIds) {
-    try {
-      await syncAllData(userId);
-    } catch (error) {
-      console.error(`Failed to sync user ${userId}:`, error);
-    }
-  }
-  
-  console.log('✅ Scheduled sync completed for all users');
 }
