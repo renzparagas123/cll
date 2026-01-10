@@ -4,12 +4,14 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Calendar, Download, RefreshCw, Info, Database } from 'lucide-react';
 import { useAccounts } from '../utils/AccountManager';
 import { auth } from '../lib/supabase';
-import { SyncService, CachedDataService } from '../utils/CachedDataService';
+import { SyncService, CachedDataService, getFormattedLastSync } from '../utils/CachedDataService';
+import { useAuth } from '../App';
 import DataCharts from '../components/DataCharts';
 
 export default function DataInsights({ apiUrl }) {
   const navigate = useNavigate();
   const { accounts, loading: accountsLoading, refresh: refreshAccounts } = useAccounts();
+  const { hasPageAccess, roleLoading } = useAuth();
   
   const [activeTab, setActiveTab] = useState('overview');
   const [metricsData, setMetricsData] = useState([]);
@@ -24,10 +26,11 @@ export default function DataInsights({ apiUrl }) {
 
   // Sync state
   const [syncing, setSyncing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [lastSyncTime, setLastSyncTime] = useState(() => getFormattedLastSync('metrics'));
 
-  // Prevent multiple fetches
+  // Prevent multiple fetches and tab-switch reloads
   const initialFetchDone = useRef(false);
+  const dataLoaded = useRef(false);
   const currentFetchController = useRef(null);
   
   const getDefaultDates = () => {
@@ -53,7 +56,14 @@ export default function DataInsights({ apiUrl }) {
     try {
       const result = await SyncService.getStatus();
       if (result.success && result.data?.settings?.last_sync_at) {
-        setLastSyncTime(new Date(result.data.settings.last_sync_at));
+        // Update localStorage with server time if more recent
+        const serverTime = new Date(result.data.settings.last_sync_at);
+        const localTime = new Date(localStorage.getItem('lastSync_metrics') || 0);
+        if (serverTime > localTime) {
+          localStorage.setItem('lastSync_metrics', result.data.settings.last_sync_at);
+          localStorage.setItem('lastSync_all', result.data.settings.last_sync_at);
+        }
+        setLastSyncTime(getFormattedLastSync('metrics'));
       }
     } catch (err) {
       console.error('Failed to fetch sync status:', err);
@@ -76,7 +86,7 @@ export default function DataInsights({ apiUrl }) {
       );
 
       if (result.success) {
-        setLastSyncTime(new Date());
+        setLastSyncTime(getFormattedLastSync('metrics'));
         alert(`Sync completed! ${result.data.total_synced} metric records synced.`);
         // Refresh data after sync
         fetchCachedMetrics();
@@ -150,6 +160,7 @@ export default function DataInsights({ apiUrl }) {
 
         setMetricsData(formattedMetrics);
         setChartData([]);
+        dataLoaded.current = true; // Mark data as loaded
       } else {
         throw new Error(result.error || 'Failed to fetch cached metrics');
       }
@@ -188,6 +199,13 @@ export default function DataInsights({ apiUrl }) {
 
   // Initialize - only run once when accounts load
   useEffect(() => {
+    // Skip everything if data already loaded (prevents tab-switch reload)
+    if (dataLoaded.current) return;
+    // Skip if we already have metrics data
+    if (metricsData.length > 0) {
+      dataLoaded.current = true;
+      return;
+    }
     if (accountsLoading) return;
     
     if (accounts.length === 0) {
@@ -381,8 +399,9 @@ export default function DataInsights({ apiUrl }) {
     );
   };
 
-  // Only show full-page loading on initial load when we have no data
-  if (accountsLoading && !initialFetchDone.current && metricsData.length === 0) {
+  // Only show full-page loading on very first load when we have absolutely no data
+  // NEVER show loading if we have any data - this prevents tab-switch reload issue
+  if (accountsLoading && accounts.length === 0 && metricsData.length === 0 && !dataLoaded.current) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
@@ -403,7 +422,7 @@ export default function DataInsights({ apiUrl }) {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Current Data</h2>
               <p className="text-xs text-gray-500">
-                {lastSyncTime ? `Last synced: ${lastSyncTime.toLocaleString()}` : 'Not synced yet'}
+                {lastSyncTime && lastSyncTime !== 'Never' ? `Last synced: ${lastSyncTime}` : 'Not synced yet'}
               </p>
             </div>
           </div>
@@ -551,14 +570,14 @@ export default function DataInsights({ apiUrl }) {
             </div>
           )}
 
-          {loading && metricsData.length === 0 ? (
+          {loading && metricsData.length === 0 && !dataLoaded.current ? (
             <div className="flex items-center justify-center h-96">
               <div className="text-center">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
                 <p className="text-gray-600">Loading data...</p>
               </div>
             </div>
-          ) : !loading && metricsData.length === 0 ? (
+          ) : !loading && metricsData.length === 0 && !dataLoaded.current ? (
             <div className="mx-6 mt-8 text-center text-gray-500">
               <div className="py-12">
                 <Database size={48} className="mx-auto text-gray-300 mb-4" />

@@ -1,9 +1,12 @@
-// pages/Login.jsx
+// pages/Auth/Login.jsx
 // User authentication page using Supabase Auth
+// Only @cloudlogiclimited.com emails are allowed
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../lib/supabase';
+
+const ALLOWED_DOMAIN = '@cloudlogiclimited.com';
 
 function Login() {
   const navigate = useNavigate();
@@ -19,16 +22,32 @@ function Login() {
     const checkSession = async () => {
       const { session } = await auth.getSession();
       if (session) {
-        navigate('/dashboard', { replace: true });
+        navigate('/orders', { replace: true });
       }
     };
     checkSession();
   }, [navigate]);
 
+  // Validate email domain
+  const validateEmail = (email) => {
+    if (!email.endsWith(ALLOWED_DOMAIN)) {
+      return `Only ${ALLOWED_DOMAIN} emails are allowed`;
+    }
+    return null;
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+
+    // Validate email domain
+    const emailError = validateEmail(email);
+    if (emailError) {
+      setError(emailError);
+      setLoading(false);
+      return;
+    }
 
     try {
       const { data, error } = await auth.signIn(email, password);
@@ -39,7 +58,7 @@ function Login() {
       }
 
       if (data.session) {
-        navigate('/dashboard', { replace: true });
+        navigate('/orders', { replace: true });
       }
     } catch (err) {
       setError(err.message);
@@ -54,6 +73,14 @@ function Login() {
     setError('');
     setMessage('');
 
+    // Validate email domain
+    const emailError = validateEmail(email);
+    if (emailError) {
+      setError(emailError);
+      setLoading(false);
+      return;
+    }
+
     try {
       const { data, error } = await auth.signUp(email, password);
 
@@ -67,7 +94,7 @@ function Login() {
         setMessage('Check your email for the confirmation link!');
         setMode('login');
       } else if (data.session) {
-        navigate('/dashboard', { replace: true });
+        navigate('/orders', { replace: true });
       }
     } catch (err) {
       setError(err.message);
@@ -81,6 +108,14 @@ function Login() {
     setLoading(true);
     setError('');
     setMessage('');
+
+    // Validate email domain
+    const emailError = validateEmail(email);
+    if (emailError) {
+      setError(emailError);
+      setLoading(false);
+      return;
+    }
 
     try {
       const { error } = await auth.signInWithMagicLink(email);
@@ -101,6 +136,13 @@ function Login() {
   const handleForgotPassword = async () => {
     if (!email) {
       setError('Please enter your email address');
+      return;
+    }
+
+    // Validate email domain
+    const emailError = validateEmail(email);
+    if (emailError) {
+      setError(emailError);
       return;
     }
 
@@ -134,11 +176,18 @@ function Login() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">Lazada Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-900">CLL Sellercenter</h1>
           <p className="text-gray-500 mt-1">
             {mode === 'login' && 'Sign in to your account'}
             {mode === 'signup' && 'Create a new account'}
             {mode === 'magic' && 'Sign in with magic link'}
+          </p>
+        </div>
+
+        {/* Domain Notice */}
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <p className="text-blue-700 text-sm text-center">
+            Only <strong>{ALLOWED_DOMAIN}</strong> emails are allowed
           </p>
         </div>
 
@@ -168,7 +217,7 @@ function Login() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                placeholder="you@example.com"
+                placeholder={`user${ALLOWED_DOMAIN}`}
                 required
               />
             </div>
@@ -229,7 +278,7 @@ function Login() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                placeholder="you@example.com"
+                placeholder={`user${ALLOWED_DOMAIN}`}
                 required
               />
             </div>
@@ -271,7 +320,7 @@ function Login() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                placeholder="you@example.com"
+                placeholder={`user${ALLOWED_DOMAIN}`}
                 required
               />
             </div>
@@ -297,14 +346,6 @@ function Login() {
                 Sign in with password
               </button>
             )}
-            {mode !== 'signup' && (
-              <button
-                onClick={() => { setMode('signup'); setError(''); setMessage(''); }}
-                className="text-green-600 hover:text-green-700 font-medium"
-              >
-                Create account
-              </button>
-            )}
             {mode !== 'magic' && (
               <button
                 onClick={() => { setMode('magic'); setError(''); setMessage(''); }}
@@ -315,6 +356,11 @@ function Login() {
             )}
           </div>
         </div>
+
+        {/* Footer */}
+        <p className="text-center text-xs text-gray-400 mt-6">
+          Contact your administrator if you need an account.
+        </p>
       </div>
     </div>
   );

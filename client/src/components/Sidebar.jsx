@@ -1,25 +1,53 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-    HomeIcon,
     ShoppingBagIcon,
     ChartBarSquareIcon,
     BuildingStorefrontIcon,
-    CogIcon,
+    Cog6ToothIcon,
+    ArrowPathIcon,
+    UsersIcon,
 } from "@heroicons/react/24/outline";
+import { useAuth } from "../App";
 
 export default function Sidebar() {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const location = useLocation();
+    const { role, hasPageAccess, isAdmin, loading, roleLoading } = useAuth();
 
-    const menuItems = [
-        { name: "Dashboard", icon: ChartBarSquareIcon, path: "/dashboard" },
-        { name: "Orders", icon: ShoppingBagIcon, path: "/orders" },
-        { name: "Fast Fulfilment", icon: BuildingStorefrontIcon, path: "/ffr" },
-        { name: "Data Insights", icon: CogIcon, path: "/data_insights" },
+    // All menu items with their required page access
+    const allMenuItems = [
+        { name: "Orders", icon: ShoppingBagIcon, path: "/orders", page: "orders" },
+        { name: "Fast Fulfilment", icon: BuildingStorefrontIcon, path: "/ffr", page: "ffr" },
+        { name: "Data Insights", icon: ChartBarSquareIcon, path: "/data_insights", page: "data_insights" },
+        { name: "Sync Dashboard", icon: ArrowPathIcon, path: "/sync", page: "sync" },
+        { name: "Settings", icon: Cog6ToothIcon, path: "/settings", page: "settings" },
+        { name: "User Management", icon: UsersIcon, path: "/users", page: "users" },
     ];
 
+    // Filter menu items based on role permissions
+    const menuItems = allMenuItems.filter(item => hasPageAccess(item.page));
+
     const isActive = (path) => location.pathname === path;
+
+    const getRoleBadgeColor = () => {
+        switch (role) {
+            case 'admin': return 'bg-red-100 text-red-700';
+            case 'warehouse': return 'bg-blue-100 text-blue-700';
+            case 'marketing': return 'bg-green-100 text-green-700';
+            default: return 'bg-gray-100 text-gray-700';
+        }
+    };
+
+    if (loading || roleLoading) {
+        return (
+            <div className={`flex flex-col bg-white shadow h-screen w-64`}>
+                <div className="flex items-center justify-center h-full">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className={`flex flex-col bg-white shadow h-screen transition-all duration-300 ${isCollapsed ? "w-20" : "w-64"}`}>
@@ -35,6 +63,15 @@ export default function Sidebar() {
                     {isCollapsed ? "→" : "←"}
                 </button>
             </div>
+
+            {/* Role Badge */}
+            {!isCollapsed && role && (
+                <div className="px-4 py-2">
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getRoleBadgeColor()}`}>
+                        {role.charAt(0).toUpperCase() + role.slice(1)}
+                    </span>
+                </div>
+            )}
 
             {/* Navigation */}
             <nav className="flex-1 p-4 overflow-y-auto">
